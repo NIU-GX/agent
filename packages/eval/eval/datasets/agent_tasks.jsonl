@@ -1,0 +1,3 @@
+{"question": "根据知识库解释 CoT 与 ReAct 的区别", "strategy": "react", "expected_tools": ["retrieve"], "success_contains": ""}
+{"question": "请制定计划并对比 Plan-and-Execute 与 ReAct", "strategy": "plan_execute", "expected_tools": ["retrieve"], "success_contains": ""}
+{"question": "为什么企业 Agent 需要 max_iterations？", "strategy": "cot", "expected_tools": [], "success_contains": ""}

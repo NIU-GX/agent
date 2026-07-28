@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+data:
+  APP_ENV: {{ .Values.env.APP_ENV | quote }}
+  RABBITMQ_URL: {{ .Values.env.RABBITMQ_URL | quote }}
+  REDIS_URL: {{ .Values.env.REDIS_URL | quote }}
+  MILVUS_HOST: {{ .Values.env.MILVUS_HOST | quote }}
+  POSTGRES_HOST: {{ .Values.env.POSTGRES_HOST | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+type: Opaque
+stringData:
+  APP_API_KEY: "change-me"
+  LLM_API_KEY: "sk-xxx"
+  POSTGRES_PASSWORD: "agent"

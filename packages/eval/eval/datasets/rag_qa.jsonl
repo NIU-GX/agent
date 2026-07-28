@@ -1,0 +1,3 @@
+{"question": "什么是 ReAct Agent？", "golden_doc_ids": ["doc_react"]}
+{"question": "RabbitMQ 在 RAG 流水线中的作用是什么？", "golden_doc_ids": ["doc_mq"]}
+{"question": "Milvus hybrid search 为什么常用 RRF？", "golden_doc_ids": ["doc_rrf"]}

@@ -1,0 +1,23 @@
+[project]
+name = "agent-api"
+version = "0.1.0"
+description = "FastAPI app for agent platform"
+requires-python = ">=3.9"
+dependencies = [
+  "agent-shared",
+  "llm-gateway",
+  "agent-rag",
+  "agent-core",
+  "agent-eval",
+  "fastapi>=0.111",
+  "uvicorn[standard]>=0.30",
+  "python-multipart>=0.0.9",
+  "aio-pika>=9.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

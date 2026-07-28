@@ -1,0 +1,46 @@
+replicaCount:
+  api: 2
+  worker: 2
+  web: 1
+
+image:
+  api: agent-platform/api:0.1.0
+  worker: agent-platform/worker:0.1.0
+  web: agent-platform/web:0.1.0
+  pullPolicy: IfNotPresent
+
+service:
+  apiPort: 8000
+  webPort: 80
+
+ingress:
+  enabled: true
+  host: agent.local
+  className: nginx
+
+env:
+  APP_ENV: prod
+  ALLOW_INMEMORY_FALLBACK: "false"
+  RABBITMQ_URL: amqp://user:pass@rabbitmq:5672/
+  REDIS_URL: redis://redis:6379/0
+  MILVUS_HOST: milvus
+  MINIO_ENDPOINT: minio:9000
+  POSTGRES_HOST: postgres
+  AGENT_ENABLE_CHECKPOINT: "true"
+  RAG_RERANK_MODE: llm
+
+resources:
+  api:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  worker:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi

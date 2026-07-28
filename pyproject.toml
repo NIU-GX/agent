@@ -1,0 +1,33 @@
+[project]
+name = "agent-platform"
+version = "0.1.0"
+description = "Enterprise agent platform: LLM gateway, async RAG, LangGraph strategies, eval"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "agent-shared",
+  "llm-gateway",
+  "agent-rag",
+  "agent-core",
+  "agent-eval",
+  "agent-api",
+  "agent-rag-worker",
+]
+
+[tool.uv.workspace]
+members = [
+  "packages/shared",
+  "packages/llm-gateway",
+  "packages/rag",
+  "packages/agent-core",
+  "packages/eval",
+  "apps/api",
+  "apps/rag-worker",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
