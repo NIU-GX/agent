@@ -75,6 +75,14 @@ class Settings(BaseSettings):
         default="[]",
         description='MCP server 列表 JSON，如 [{"name":"fs","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/data"]}]',
     )
+    skills_dir: str = Field(
+        default="skills",
+        description="项目级 Skills 目录（含 */SKILL.md）",
+    )
+    allowed_http_hosts: str = Field(
+        default="",
+        description="http_get 允许的主机，逗号分隔；空表示不限制（仅开发）",
+    )
 
     @property
     def postgres_dsn(self) -> str:

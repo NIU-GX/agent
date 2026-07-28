@@ -1,4 +1,4 @@
-"""ReAct（Reason + Act）策略图：Reason → Act → Observe 循环 + Critic。"""
+"""ReAct（Reason + Act）策略图：渐进披露工具/Skills + Critic。"""
 
 from __future__ import annotations
 
@@ -27,14 +27,26 @@ def build_react_graph(*, llm: Any, tools: ToolRegistry, checkpointer: Any = None
                 "thoughts": [f"达到 max_iterations={max_iters}，强制结束。"],
             }
 
+        unlocked = set(state.get("unlocked_tools") or [])
+        skill_catalog = ""
+        if tools.skills:
+            skill_catalog = tools.skills.format_catalog_prompt()
+        tool_catalog = tools.format_catalog_prompt(unlocked=unlocked)
+        skill_body = "\n\n".join(state.get("skill_instructions") or [])
+
+        system = (
+            "你是 ReAct Agent。按需调用工具收集信息，信息足够时直接给出最终中文回答。"
+            "不要编造检索结果。有上下文时必须引用。\n"
+            "渐进式披露：先看 Skills/Tools 目录；需要时用 activate_skill 解锁 optional/MCP 工具，"
+            "再调用具体工具。核心工具 retrieve/calculator 始终可用。\n\n"
+            f"## Skills 目录 (L0)\n{skill_catalog}\n\n"
+            f"## Tools 目录 (L0)\n{tool_catalog}\n"
+        )
+        if skill_body:
+            system += f"\n## 已激活 Skill 指令 (L1)\n{skill_body}\n"
+
         messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": (
-                    "你是 ReAct Agent。按需调用工具收集信息，信息足够时直接给出最终中文回答。"
-                    "不要编造检索结果。有上下文时必须引用。"
-                ),
-            },
+            {"role": "system", "content": system},
             {"role": "user", "content": state["message"]},
         ]
         for item in state.get("tool_history") or []:
@@ -64,7 +76,9 @@ def build_react_graph(*, llm: Any, tools: ToolRegistry, checkpointer: Any = None
                 }
             )
 
-        body = await llm.chat(messages, tools=tools.openai_tools_schema())
+        body = await llm.chat(
+            messages, tools=tools.openai_tools_schema(unlocked=unlocked)
+        )
         message = body["choices"][0]["message"]
         tool_calls = message.get("tool_calls") or []
         content = message.get("content") or ""
@@ -112,19 +126,33 @@ def build_react_graph(*, llm: Any, tools: ToolRegistry, checkpointer: Any = None
         last = history[-1]
         name = last["name"]
         args = last.get("arguments") or {}
-        result = await tools.call(name, args)
+        result = await tools.call(name, args, state=dict(state))
+        result_for_history = result
+        if isinstance(result, dict) and "state_patch" in result:
+            result_for_history = {k: v for k, v in result.items() if k != "state_patch"}
         updates: dict[str, Any] = {
             "tool_history": [
                 {
                     "name": name,
                     "arguments": args,
                     "call_id": last.get("call_id", "call"),
-                    "result": result,
+                    "result": result_for_history,
                 }
             ],
             "thoughts": [f"Observation from {name}"],
             "pending_tool": None,
         }
+        patch = result.get("state_patch") if isinstance(result, dict) else None
+        if patch:
+            updates.update(
+                {
+                    k: v
+                    for k, v in patch.items()
+                    if k in {"active_skills", "unlocked_tools", "skill_instructions"}
+                }
+            )
+            if patch.get("skill_event"):
+                updates["skill_events"] = [patch["skill_event"]]
         if name == "retrieve" and result.get("ok"):
             updates["context"] = result.get("context", "")
             updates["citations"] = result.get("hits", [])

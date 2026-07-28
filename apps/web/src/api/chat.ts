@@ -1,6 +1,8 @@
 /**
  * 后端 SSE 对话 / HITL 恢复。
  */
+import { API_BASE, authHeaders } from './http'
+
 export type ChatEvent = {
   type: string
   data: Record<string, unknown>
@@ -37,21 +39,20 @@ async function readSse(
   }
 }
 
-function authHeaders(): HeadersInit {
-  return {
-    'Content-Type': 'application/json',
-    'X-API-Key': localStorage.getItem('apiKey') || 'dev-api-key-change-me',
-  }
-}
-
 export async function streamChat(
-  body: { message: string; strategy: string; enable_rag: boolean; session_id?: string },
+  body: {
+    message: string
+    strategy: string
+    enable_rag: boolean
+    session_id?: string
+    skills?: string[]
+  },
   onEvent: (ev: ChatEvent) => void,
   signal?: AbortSignal,
 ) {
-  const resp = await fetch('/api/v1/chat/stream', {
+  const resp = await fetch(`${API_BASE}/chat/stream`, {
     method: 'POST',
-    headers: authHeaders(),
+    headers: authHeaders(true),
     body: JSON.stringify(body),
     signal,
   })
@@ -70,9 +71,9 @@ export async function resumeChat(
   onEvent: (ev: ChatEvent) => void,
   signal?: AbortSignal,
 ) {
-  const resp = await fetch('/api/v1/chat/resume', {
+  const resp = await fetch(`${API_BASE}/chat/resume`, {
     method: 'POST',
-    headers: authHeaders(),
+    headers: authHeaders(true),
     body: JSON.stringify(body),
     signal,
   })

@@ -1,46 +1,62 @@
 <template>
-  <div>
-    <h2>知识库</h2>
-    <el-upload :http-request="upload" :show-file-list="false">
-      <el-button type="primary">上传文档</el-button>
-    </el-upload>
-    <el-table :data="docs" style="margin-top: 16px">
-      <el-table-column prop="id" label="ID" width="280" />
-      <el-table-column prop="filename" label="文件名" />
-      <el-table-column prop="status" label="状态" width="120" />
-      <el-table-column prop="chunk_count" label="Chunks" width="100" />
-    </el-table>
+  <div class="page">
+    <header class="page-header head">
+      <div>
+        <h1>知识库</h1>
+        <p>上传文档进入异步入库流水线，完成后可被检索与引用。</p>
+      </div>
+      <el-upload :http-request="upload" :show-file-list="false">
+        <el-button type="primary">上传文档</el-button>
+      </el-upload>
+    </header>
+
+    <div class="panel table-wrap">
+      <el-table :data="docs" empty-text="暂无文档">
+        <el-table-column prop="filename" label="文件名" min-width="180" />
+        <el-table-column prop="status" label="状态" width="120" />
+        <el-table-column prop="chunk_count" label="Chunks" width="100" />
+        <el-table-column prop="id" label="ID" min-width="240" />
+      </el-table>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import type { UploadRequestOptions } from 'element-plus'
+import { listDocuments, uploadDocument, type DocumentItem } from '../api/documents'
 
-const docs = ref<any[]>([])
-const apiKey = () => localStorage.getItem('apiKey') || 'dev-api-key-change-me'
+const docs = ref<DocumentItem[]>([])
 
 async function refresh() {
-  const resp = await fetch('/api/v1/documents', { headers: { 'X-API-Key': apiKey() } })
-  const data = await resp.json()
+  const data = await listDocuments()
   docs.value = data.items || []
 }
 
 async function upload(opt: UploadRequestOptions) {
-  const form = new FormData()
-  form.append('file', opt.file)
-  const resp = await fetch('/api/v1/documents', {
-    method: 'POST',
-    headers: { 'X-API-Key': apiKey() },
-    body: form,
-  })
-  if (!resp.ok) {
-    opt.onError?.(new Error(await resp.text()) as any)
-    return
+  try {
+    const data = await uploadDocument(opt.file as File)
+    opt.onSuccess?.(data as any)
+    await refresh()
+  } catch (e) {
+    opt.onError?.(e as any)
   }
-  opt.onSuccess?.(await resp.json() as any)
-  await refresh()
 }
 
 onMounted(refresh)
 </script>
+
+<style scoped>
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.table-wrap {
+  padding: 8px;
+  overflow: hidden;
+}
+</style>

@@ -50,6 +50,10 @@ class ChatRequest(BaseModel):
         description="cot | react | plan_execute | auto",
     )
     enable_rag: bool = Field(default=True, description="是否启用知识库检索")
+    skills: list[str] = Field(
+        default_factory=list,
+        description="会话级预激活的 skill 名称（L1）",
+    )
 
 
 class Citation(BaseModel):
@@ -67,7 +71,10 @@ class ChatEvent(BaseModel):
 
     type: str = Field(
         ...,
-        description="token|thought|tool_start|tool_end|plan|citation|final|error|strategy|hitl",
+        description=(
+            "token|thought|tool_start|tool_end|skill_start|skill_end|"
+            "plan|citation|final|error|strategy|hitl"
+        ),
     )
     data: dict[str, Any] = Field(default_factory=dict)
 

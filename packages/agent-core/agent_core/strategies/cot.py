@@ -30,6 +30,9 @@ def build_cot_graph(*, llm: Any, tools: ToolRegistry, checkpointer: Any = None):
             "先写出简短推理步骤，再给出结论。格式：推理:\\n...\\n回答:\\n..."
             "若有上下文，必须基于上下文并注明依据。"
         )
+        skill_body = "\n\n".join(state.get("skill_instructions") or [])
+        if skill_body:
+            system += f"\n\n## 已激活 Skill 指令\n{skill_body}"
         user = state["message"]
         if state.get("context"):
             user = f"上下文:\n{state['context']}\n\n问题:\n{state['message']}"

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import operator
 from typing import Annotated, Any, TypedDict
 
 from shared.schemas import Citation
@@ -31,6 +30,11 @@ class AgentState(TypedDict, total=False):
     error: str | None
     awaiting_hitl: bool
     hitl_approved: bool
+    # Tool / Skill 渐进披露
+    active_skills: list[str]
+    unlocked_tools: list[str]
+    skill_instructions: list[str]
+    skill_events: Annotated[list[dict[str, Any]], merge_lists]
 
 
 def citations_from_hits(hits: list[Any]) -> list[Citation]:

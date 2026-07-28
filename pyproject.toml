@@ -3,7 +3,7 @@ name = "agent-platform"
 version = "0.1.0"
 description = "Enterprise agent platform: LLM gateway, async RAG, LangGraph strategies, eval"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
   "agent-shared",
   "llm-gateway",

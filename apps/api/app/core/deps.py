@@ -8,6 +8,7 @@ from typing import Any
 import aio_pika
 
 from agent_core import AgentRuntime
+from agent_core.skills import SkillRegistry
 from agent_core.tools import ToolRegistry
 from llm_gateway import LLMGateway, build_rate_limiter
 from rag.mq import RagPublisher, declare_topology
@@ -27,6 +28,7 @@ class AppState:
     object_store: Any
     retrieve: RetrieveService
     tools: ToolRegistry
+    skills: SkillRegistry
     agent: AgentRuntime
     status: PostgresStatusStore
     db: Database
@@ -132,9 +134,15 @@ async def get_app_state() -> AppState:
         embedder=llm,
         chat=llm,
     )
-    tools = ToolRegistry(retriever=_RetrieveAdapter(retrieve))
+    hosts = [h.strip() for h in (settings.allowed_http_hosts or "").split(",") if h.strip()]
+    skills = SkillRegistry(settings.skills_dir)
+    tools = ToolRegistry(
+        retriever=_RetrieveAdapter(retrieve),
+        allowed_http_hosts=hosts,
+        skills=skills,
+    )
     await tools.load_mcp_servers(settings.mcp_servers_json)
-    agent = AgentRuntime(llm=llm, tools=tools)
+    agent = AgentRuntime(llm=llm, tools=tools, skills=skills)
     await agent.setup_checkpointer()
 
     publisher = None
@@ -154,6 +162,7 @@ async def get_app_state() -> AppState:
         object_store=object_store,
         retrieve=retrieve,
         tools=tools,
+        skills=skills,
         agent=agent,
         status=status,
         db=db,

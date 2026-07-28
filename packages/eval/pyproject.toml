@@ -2,7 +2,7 @@
 name = "agent-eval"
 version = "0.1.0"
 description = "Retrieval, generation heuristic, and trajectory eval"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
   "agent-shared",
 ]

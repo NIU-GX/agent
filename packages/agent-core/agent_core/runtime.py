@@ -11,6 +11,7 @@ from shared.logging import get_logger
 from shared.schemas import AgentStrategy, ChatEvent
 
 from agent_core.nodes import llm_route_strategy
+from agent_core.skills.registry import SkillRegistry
 from agent_core.state import AgentState
 from agent_core.strategies import build_cot_graph, build_plan_execute_graph, build_react_graph
 from agent_core.tools.registry import ToolRegistry
@@ -19,9 +20,16 @@ logger = get_logger(__name__)
 
 
 class AgentRuntime:
-    def __init__(self, *, llm: Any, tools: ToolRegistry) -> None:
+    def __init__(
+        self,
+        *,
+        llm: Any,
+        tools: ToolRegistry,
+        skills: SkillRegistry | None = None,
+    ) -> None:
         self.llm = llm
         self.tools = tools
+        self.skills = skills or getattr(tools, "skills", None)
         self._checkpointer: Any = None
         self._pg_pool: Any = None
         self._graphs: dict[AgentStrategy, Any] = {}
@@ -78,6 +86,36 @@ class AgentRuntime:
             return strategy
         return await llm_route_strategy(self.llm, message)
 
+    def _preactivate_skills(self, skill_names: list[str]) -> dict[str, Any]:
+        """会话级预激活 Skills → active_skills / unlocked_tools / skill_instructions。"""
+        active: list[str] = []
+        unlocked: set[str] = set()
+        instructions: list[str] = []
+        events: list[dict[str, Any]] = []
+        if not self.skills or not skill_names:
+            return {
+                "active_skills": active,
+                "unlocked_tools": sorted(unlocked),
+                "skill_instructions": instructions,
+                "skill_events": events,
+            }
+        for name in skill_names:
+            result = self.skills.activate(name)
+            if not result.get("ok"):
+                events.append({"name": name, "phase": "error", "error": result.get("error")})
+                continue
+            active.append(name)
+            unlocked.update(result.get("unlocked_tools") or [])
+            body = result.get("body") or ""
+            instructions.append(f"## Skill: {name}\n{body}".strip())
+            events.append({"name": name, "phase": "activated"})
+        return {
+            "active_skills": active,
+            "unlocked_tools": sorted(unlocked),
+            "skill_instructions": instructions,
+            "skill_events": events,
+        }
+
     async def run_stream(
         self,
         *,
@@ -86,6 +124,7 @@ class AgentRuntime:
         enable_rag: bool = True,
         session_id: str | None = None,
         resume_value: Any | None = None,
+        skills: list[str] | None = None,
     ) -> AsyncIterator[ChatEvent]:
         if not self._graphs:
             self._rebuild_graphs(checkpointer=None)
@@ -96,6 +135,25 @@ class AgentRuntime:
             type="strategy",
             data={"strategy": chosen.value, "session_id": thread_id},
         )
+
+        pre = self._preactivate_skills(list(skills or []))
+        for ev in pre.get("skill_events") or []:
+            if ev.get("phase") == "activated":
+                yield ChatEvent(type="skill_start", data={"name": ev.get("name")})
+                yield ChatEvent(
+                    type="skill_end",
+                    data={"name": ev.get("name"), "ok": True, "source": "preactivate"},
+                )
+            elif ev.get("phase") == "error":
+                yield ChatEvent(
+                    type="skill_end",
+                    data={
+                        "name": ev.get("name"),
+                        "ok": False,
+                        "error": ev.get("error"),
+                        "source": "preactivate",
+                    },
+                )
 
         graph = self._graphs[chosen]
         config = {"configurable": {"thread_id": thread_id}}
@@ -116,6 +174,10 @@ class AgentRuntime:
             "done": False,
             "error": None,
             "awaiting_hitl": False,
+            "active_skills": list(pre.get("active_skills") or []),
+            "unlocked_tools": list(pre.get("unlocked_tools") or []),
+            "skill_instructions": list(pre.get("skill_instructions") or []),
+            "skill_events": [],
         }
 
         final_answer = ""
@@ -132,7 +194,6 @@ class AgentRuntime:
                 stream_input = initial
 
             async for update in graph.astream(stream_input, config=config, stream_mode="updates"):
-                # interrupt 时 update 可能是特殊结构
                 if isinstance(update, dict) and "__interrupt__" in update:
                     payload = update["__interrupt__"]
                     yield ChatEvent(
@@ -161,11 +222,27 @@ class AgentRuntime:
                                 "plan_steps": delta.get("plan_steps") or final_plan,
                             },
                         )
+                    for sev in delta.get("skill_events") or []:
+                        yield ChatEvent(
+                            type="skill_start",
+                            data={"name": sev.get("name"), "phase": sev.get("phase")},
+                        )
+                        yield ChatEvent(
+                            type="skill_end",
+                            data={
+                                "name": sev.get("name"),
+                                "ok": sev.get("phase") == "activated",
+                                "source": "activate_skill",
+                            },
+                        )
                     for item in delta.get("tool_history") or []:
                         if item.get("result") is None:
                             yield ChatEvent(
                                 type="tool_start",
-                                data={"name": item.get("name"), "arguments": item.get("arguments")},
+                                data={
+                                    "name": item.get("name"),
+                                    "arguments": item.get("arguments"),
+                                },
                             )
                         else:
                             yield ChatEvent(
@@ -187,7 +264,6 @@ class AgentRuntime:
                     if delta.get("error"):
                         yield ChatEvent(type="error", data={"message": delta["error"]})
         except Exception as exc:  # noqa: BLE001
-            # LangGraph interrupt 可能以异常形式冒泡（版本差异）
             if "Interrupt" in type(exc).__name__ or "interrupt" in str(exc).lower():
                 yield ChatEvent(
                     type="hitl",
@@ -199,7 +275,6 @@ class AgentRuntime:
             return
 
         if final_answer and not streamed_answer:
-            # 对未走流式节点的答案做真 LLM 二次流式可选；默认分块推送以保证前端兼容
             async for tok in self._stream_answer_tokens(final_answer):
                 yield ChatEvent(type="token", data={"text": tok})
 
@@ -219,7 +294,6 @@ class AgentRuntime:
         if len(answer) < 40:
             yield answer
             return
-        # 已有完整答案时不再二次调用 LLM，按句/块推送避免双倍计费
         buf = ""
         for ch in answer:
             buf += ch

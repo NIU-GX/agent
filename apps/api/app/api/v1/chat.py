@@ -41,6 +41,7 @@ async def chat_stream(
             strategy=body.strategy,
             enable_rag=body.enable_rag,
             session_id=session_id,
+            skills=list(body.skills or []),
         ):
             payload = event.model_dump()
             yield f"event: {event.type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"

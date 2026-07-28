@@ -2,14 +2,13 @@
 name = "agent-shared"
 version = "0.1.0"
 description = "Shared config, schemas, logging, Postgres metadata for agent platform"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
-  "pydantic>=2.7",
-  "pydantic-settings>=2.3",
-  "eval-type-backport>=0.2",
-  "sqlalchemy[asyncio]>=2.0",
-  "asyncpg>=0.29",
-  "redis>=5.0",
+  "pydantic>=2.10",
+  "pydantic-settings>=2.6",
+  "sqlalchemy[asyncio]>=2.0.36",
+  "asyncpg>=0.30",
+  "redis>=5.2",
 ]
 
 [build-system]

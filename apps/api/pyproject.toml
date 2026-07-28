@@ -2,17 +2,17 @@
 name = "agent-api"
 version = "0.1.0"
 description = "FastAPI app for agent platform"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
   "agent-shared",
   "llm-gateway",
   "agent-rag",
   "agent-core",
   "agent-eval",
-  "fastapi>=0.111",
-  "uvicorn[standard]>=0.30",
-  "python-multipart>=0.0.9",
-  "aio-pika>=9.4",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "python-multipart>=0.0.12",
+  "aio-pika>=9.5",
 ]
 
 [build-system]

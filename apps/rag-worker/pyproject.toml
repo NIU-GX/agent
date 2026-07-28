@@ -2,12 +2,12 @@
 name = "agent-rag-worker"
 version = "0.1.0"
 description = "RabbitMQ consumers for RAG ingest stages"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
   "agent-shared",
   "agent-rag",
   "llm-gateway",
-  "aio-pika>=9.4",
+  "aio-pika>=9.5",
 ]
 
 [build-system]

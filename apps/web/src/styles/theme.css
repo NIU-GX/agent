@@ -1,0 +1,167 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=Public+Sans:wght@400;500;600&display=swap');
+
+:root {
+  --ink: #1c1917;
+  --ink-soft: #3f3a36;
+  --muted: #6f6a64;
+  --paper: #f3f4f6;
+  --surface: #fcfcfb;
+  --line: #ddd9d3;
+  --line-strong: #c8c2ba;
+  --accent: #1a4d3e;
+  --accent-hover: #143c31;
+  --accent-wash: #e7f0ec;
+  --danger: #9b2c2c;
+  --thought: #5b534a;
+  --tool: #2a4a6b;
+  --skill: #1a4d3e;
+  --radius: 6px;
+  --font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Public Sans', 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+  --shadow-soft: 0 1px 0 rgba(28, 25, 23, 0.04);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --stage-pad-x: 32px;
+  --stage-pad-y: 28px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+  /* 避免滚动条显隐导致整页（含侧栏）左右跳动 */
+  scrollbar-gutter: stable;
+}
+
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--ink);
+  background:
+    radial-gradient(1200px 600px at 12% -10%, rgba(26, 77, 62, 0.06), transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, rgba(42, 74, 107, 0.05), transparent 50%),
+    linear-gradient(165deg, #eef0f3 0%, #f5f4f1 42%, #eceff2 100%);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea {
+  font-family: inherit;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.el-button--primary {
+  --el-button-bg-color: var(--accent);
+  --el-button-border-color: var(--accent);
+  --el-button-hover-bg-color: var(--accent-hover);
+  --el-button-hover-border-color: var(--accent-hover);
+  --el-button-active-bg-color: var(--accent-hover);
+  --el-button-active-border-color: var(--accent-hover);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.el-table {
+  --el-table-border-color: var(--line);
+  --el-table-header-bg-color: rgba(28, 25, 23, 0.02);
+  --el-table-row-hover-bg-color: rgba(26, 77, 62, 0.04);
+  background: transparent !important;
+  font-size: 13.5px;
+}
+
+.el-table th.el-table__cell {
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  box-shadow: 0 0 0 1px var(--line) inset !important;
+  background: var(--surface) !important;
+}
+
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 1.5px var(--accent) inset !important;
+}
+
+.el-switch.is-checked .el-switch__core {
+  background-color: var(--accent) !important;
+  border-color: var(--accent) !important;
+}
+
+.page {
+  width: 100%;
+  max-width: 1100px;
+}
+
+.page-header {
+  margin-bottom: 24px;
+}
+
+.page-header h1 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.85rem;
+  letter-spacing: -0.02em;
+  margin: 0 0 8px;
+  color: var(--ink);
+}
+
+.page-header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.55;
+  max-width: 42rem;
+}
+
+.panel {
+  background: rgba(252, 252, 251, 0.92);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-soft);
+}
+
+.code-block {
+  margin: 0;
+  padding: 16px 18px;
+  background: #1c1917;
+  color: #e7e5e4;
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 860px) {
+  :root {
+    --stage-pad-x: 16px;
+    --stage-pad-y: 20px;
+  }
+
+  .page-header h1 {
+    font-size: 1.5rem;
+  }
+}

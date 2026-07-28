@@ -85,23 +85,49 @@ def build_plan_execute_graph(*, llm: Any, tools: ToolRegistry, checkpointer: Any
             return {"done": True}
 
         step = steps[idx]
-        tool_result = await tools.call("retrieve", {"query": step})
-        context = tool_result.get("context", "") if tool_result.get("ok") else ""
-        # 复杂步骤可嵌套短 ReAct：先试计算器关键字
+        unlocked = set(state.get("unlocked_tools") or [])
+        history: list[dict[str, Any]] = []
+        context = state.get("context") or ""
+
+        tool_result = await tools.call("retrieve", {"query": step}, state=dict(state))
+        history.append(
+            {"name": "retrieve", "arguments": {"query": step}, "result": tool_result}
+        )
+        if tool_result.get("ok"):
+            context = tool_result.get("context", "") or context
+
         calc_hint = None
         if any(ch in step for ch in "+-*/") and any(c.isdigit() for c in step):
-            calc_hint = await tools.call("calculator", {"expression": _extract_expr(step)})
+            expr = _extract_expr(step)
+            calc_hint = await tools.call(
+                "calculator", {"expression": expr}, state=dict(state)
+            )
+            history.append(
+                {"name": "calculator", "arguments": {"expression": expr}, "result": calc_hint}
+            )
+
+        # 已解锁 optional 工具可按步骤启发式调用 http_get
+        if "http_get" in unlocked and "http" in step.lower():
+            import re
+
+            urls = re.findall(r"https://[^\s]+", step)
+            for url in urls[:1]:
+                http_res = await tools.call("http_get", {"url": url}, state=dict(state))
+                history.append(
+                    {"name": "http_get", "arguments": {"url": url}, "result": http_res}
+                )
 
         user_content = f"总问题: {state['message']}\n当前步骤: {step}\n上下文:\n{context}"
         if calc_hint and calc_hint.get("ok"):
             user_content += f"\n计算结果: {calc_hint.get('result')}"
+        skill_body = "\n\n".join(state.get("skill_instructions") or [])
+        system = "你正在执行多步计划中的单步。只完成本步，给出简洁中文结论。"
+        if skill_body:
+            system += f"\n\n已激活 Skill:\n{skill_body}"
 
         body = await llm.chat(
             [
-                {
-                    "role": "system",
-                    "content": "你正在执行多步计划中的单步。只完成本步，给出简洁中文结论。",
-                },
+                {"role": "system", "content": system},
                 {"role": "user", "content": user_content},
             ]
         )
@@ -111,13 +137,6 @@ def build_plan_execute_graph(*, llm: Any, tools: ToolRegistry, checkpointer: Any
         citations = list(state.get("citations") or [])
         if tool_result.get("ok"):
             citations.extend(tool_result.get("hits") or [])
-        history = [
-            {"name": "retrieve", "arguments": {"query": step}, "result": tool_result}
-        ]
-        if calc_hint:
-            history.append(
-                {"name": "calculator", "arguments": {"expression": step}, "result": calc_hint}
-            )
         return {
             "current_step": idx + 1,
             "final_answer": merged,

@@ -9,6 +9,7 @@ COPY packages/rag /app/packages/rag
 COPY packages/agent-core /app/packages/agent-core
 COPY packages/eval /app/packages/eval
 COPY apps/api /app/apps/api
+COPY skills /app/skills
 
 RUN pip install --no-cache-dir \
   /app/packages/shared \
@@ -19,5 +20,6 @@ RUN pip install --no-cache-dir \
   /app/apps/api
 
 ENV PYTHONPATH=/app/apps/api
+ENV SKILLS_DIR=/app/skills
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
