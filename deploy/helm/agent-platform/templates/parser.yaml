@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-parser
+spec:
+  replicas: {{ .Values.replicaCount.parser }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-parser
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-parser
+    spec:
+      containers:
+        - name: parser
+          image: {{ .Values.image.worker }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: STAGE
+              value: parse
+          envFrom:
+            - secretRef:
+                name: {{ .Release.Name }}-secrets
+            - configMapRef:
+                name: {{ .Release.Name }}-config
+          resources:
+            {{- toYaml .Values.resources.parser | nindent 12 }}

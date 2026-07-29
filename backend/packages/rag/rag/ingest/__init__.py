@@ -9,10 +9,12 @@ import hashlib
 import json
 import re
 import uuid
+from zipfile import ZipFile
 from pathlib import Path
 from typing import Any, Protocol
 
 from shared.logging import get_logger
+from shared.config import settings
 
 from rag.models import Chunk, ParsedDocument, QueueMessage
 
@@ -69,9 +71,14 @@ async def run_parse(
         doc_id=msg.doc_id,
         filename=filename,
         text=text,
-        metadata={"source_key": msg.payload_ref},
+        metadata={
+            "source_key": msg.payload_ref,
+            "tenant_id": msg.tenant_id or "",
+            "kb_id": msg.kb_id or "",
+            "document_version_id": msg.document_version_id or "",
+        },
     )
-    out_key = f"parsed/{msg.doc_id}.json"
+    out_key = f"parsed/{msg.document_version_id or msg.doc_id}.json"
     await store.put_bytes(out_key, parsed.model_dump_json().encode("utf-8"), "application/json")
     # 后续阶段通过 payload_ref 读取 parsed json
     msg.payload_ref = out_key
@@ -97,13 +104,22 @@ def _extract_text(raw: bytes, filename: str) -> str:
         import io
 
         reader = PdfReader(io.BytesIO(raw))
-        return "\n".join(page.extract_text() or "" for page in reader.pages)
+        if len(reader.pages) > settings.rag_max_pdf_pages:
+            raise ValueError(f"pdf page count exceeds {settings.rag_max_pdf_pages}")
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        if not text.strip():
+            raise ValueError("pdf has no extractable text; OCR is required")
+        return text
     if lower.endswith(".docx"):
         try:
             import io
-            from zipfile import ZipFile
-
             with ZipFile(io.BytesIO(raw)) as zf:
+                total_uncompressed = sum(info.file_size for info in zf.infolist())
+                compressed = max(sum(info.compress_size for info in zf.infolist()), 1)
+                if total_uncompressed > settings.rag_max_docx_uncompressed_bytes:
+                    raise ValueError("docx uncompressed content exceeds limit")
+                if total_uncompressed / compressed > settings.rag_max_docx_compression_ratio:
+                    raise ValueError("docx compression ratio exceeds limit")
                 xml = zf.read("word/document.xml").decode("utf-8", errors="ignore")
             return re.sub(r"<[^>]+>", " ", xml)
         except Exception as exc:  # noqa: BLE001
@@ -134,7 +150,7 @@ async def run_chunk(
         child_overlap=chunk_overlap,
         parent_size=chunk_size * 3,
     )
-    out_key = f"chunks/{msg.doc_id}.json"
+    out_key = f"chunks/{msg.document_version_id or msg.doc_id}.json"
     payload = json.dumps([c.model_dump() for c in chunks], ensure_ascii=False).encode("utf-8")
     await store.put_bytes(out_key, payload, "application/json")
     msg.payload_ref = out_key
@@ -176,7 +192,10 @@ def recursive_split(text: str, size: int, overlap: int) -> list[str]:
                 buf = piece
     if buf.strip():
         chunks.append(buf.strip())
-    return chunks
+    if overlap <= 0 or len(chunks) < 2:
+        return chunks
+    # 分隔符切分也要保留重叠，避免句子/段落边界信息丢失。
+    return [chunks[0]] + [chunks[i - 1][-overlap:] + "\n" + chunk for i, chunk in enumerate(chunks[1:], 1)]
 
 
 def parent_child_chunk(
@@ -199,6 +218,7 @@ def parent_child_chunk(
                 parent_id=None,
                 text=parent_text,
                 metadata={
+                    **parsed.metadata,
                     "filename": parsed.filename,
                     "kind": "parent",
                     "source": parsed.filename,
@@ -213,6 +233,7 @@ def parent_child_chunk(
                     parent_id=parent_id,
                     text=child_text,
                     metadata={
+                        **parsed.metadata,
                         "filename": parsed.filename,
                         "kind": "child",
                         "source": parsed.filename,
@@ -240,22 +261,23 @@ async def run_embed(
 
     raw = json.loads((await store.get_bytes(msg.payload_ref)).decode("utf-8"))
     chunks = [Chunk.model_validate(item) for item in raw]
-    texts = [c.text for c in chunks]
+    children = [c for c in chunks if c.metadata.get("kind") == "child"]
+    texts = [c.text for c in children]
 
     vectors: list[list[float]] = []
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
         vectors.extend(await embedder.embed(batch))
 
-    if len(chunks) != len(vectors):
-        raise ValueError(f"embed size mismatch: chunks={len(chunks)} vectors={len(vectors)}")
+    if len(children) != len(vectors):
+        raise ValueError(f"embed size mismatch: chunks={len(children)} vectors={len(vectors)}")
     from rag.sparse import bm25_sparse
 
-    for chunk, vec in zip(chunks, vectors):
+    for chunk, vec in zip(children, vectors):
         chunk.dense_vector = vec
         chunk.sparse_vector = bm25_sparse(chunk.text)
 
-    out_key = f"embedded/{msg.doc_id}.json"
+    out_key = f"embedded/{msg.document_version_id or msg.doc_id}.json"
     payload = json.dumps([c.model_dump() for c in chunks], ensure_ascii=False).encode("utf-8")
     await store.put_bytes(out_key, payload, "application/json")
     msg.payload_ref = out_key
@@ -282,9 +304,10 @@ async def run_index(
     raw = json.loads((await store.get_bytes(msg.payload_ref)).decode("utf-8"))
     chunks = [Chunk.model_validate(item) for item in raw]
 
-    await vector_store.delete_by_doc_id(msg.doc_id)
-    await vector_store.upsert_chunks(chunks)
+    # 不删除旧版本：新 version 完整写入后由元数据层原子切换 active version。
+    children = [c for c in chunks if c.metadata.get("kind") == "child"]
+    await vector_store.upsert_chunks(children)
 
-    await status.set_document_status(msg.doc_id, "ready", chunk_count=len(chunks))
+    await status.set_document_status(msg.doc_id, "ready", chunk_count=len(children))
     await status.set_job_stage(msg.job_id, "index", "succeeded", attempt=msg.attempt)
-    logger.info("index done doc_id=%s count=%s", msg.doc_id, len(chunks))
+    logger.info("index done doc_id=%s count=%s", msg.doc_id, len(children))

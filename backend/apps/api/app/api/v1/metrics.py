@@ -23,3 +23,9 @@ async def usage_metrics(request: Request, _: None = Depends(require_api_key)):
         "summary": summary,
         "recent": [r.model_dump() for r in recorder.list_recent(50)],
     }
+
+
+@router.get("/metrics/rag")
+async def rag_metrics(request: Request, _: None = Depends(require_api_key)):
+    """供 Prometheus exporter 或平台监控轮询的 RAG 控制面指标。"""
+    return await request.app.state.container.rag_store.rag_metrics()

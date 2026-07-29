@@ -25,6 +25,15 @@ members = [
   "backend/apps/rag-worker",
 ]
 
+[tool.uv.sources]
+agent-shared = { workspace = true }
+llm-gateway = { workspace = true }
+agent-rag = { workspace = true }
+agent-core = { workspace = true }
+agent-eval = { workspace = true }
+agent-api = { workspace = true }
+agent-rag-worker = { workspace = true }
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

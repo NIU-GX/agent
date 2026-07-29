@@ -10,6 +10,7 @@ from app.api.v1 import (
     documents,
     eval_api,
     health,
+    knowledge_bases,
     mcp_servers,
     metrics,
     prompts,
@@ -21,6 +22,7 @@ router = APIRouter()
 router.include_router(health.router, tags=["health"])
 router.include_router(chat.router, tags=["chat"])
 router.include_router(documents.router, tags=["documents"])
+router.include_router(knowledge_bases.router, tags=["knowledge-bases"])
 router.include_router(eval_api.router, tags=["eval"])
 router.include_router(metrics.router, tags=["metrics"])
 router.include_router(capabilities.router, tags=["capabilities"])

@@ -54,6 +54,14 @@ class ChatRequest(BaseModel):
         default_factory=list,
         description="会话级预激活的 skill 名称（L1）",
     )
+    knowledge_base_ids: list[str] | None = Field(
+        default=None,
+        description="可选 KB 范围；必须是当前 API Key 已授权 KB 的子集",
+    )
+
+
+class KnowledgeBaseCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=256)
 
 
 class Citation(BaseModel):

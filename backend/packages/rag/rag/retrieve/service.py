@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 import re
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from shared.config import settings
@@ -17,11 +18,15 @@ logger = get_logger(__name__)
 
 
 class DenseSearcher(Protocol):
-    async def search(self, vector: list[float], top_k: int) -> list[RetrievalHit]: ...
+    async def search(self, vector: list[float], top_k: int, *, scope: "RetrievalScope | None" = None) -> list[RetrievalHit]: ...
 
 
 class SparseSearcher(Protocol):
-    async def search(self, sparse: dict[int, float], top_k: int) -> list[RetrievalHit]: ...
+    async def search(self, sparse: dict[int, float], top_k: int, *, scope: "RetrievalScope | None" = None) -> list[RetrievalHit]: ...
+
+
+class LexicalSearcher(Protocol):
+    async def search(self, query: str, top_k: int, *, tenant_id: str, kb_ids: set[str]) -> list[RetrievalHit]: ...
 
 
 class QueryEmbedder(Protocol):
@@ -32,18 +37,34 @@ class ChatCompleter(Protocol):
     async def chat(self, messages: list[dict[str, Any]]) -> dict[str, Any]: ...
 
 
+class Reranker(Protocol):
+    async def rerank(self, query: str, hits: list[RetrievalHit], top_k: int) -> list[RetrievalHit]: ...
+
+
+class ParentHydrator(Protocol):
+    async def hydrate(self, hits: list[RetrievalHit], scope: "RetrievalScope") -> list[RetrievalHit]: ...
+
+
+@dataclass(frozen=True)
+class RetrievalScope:
+    tenant_id: str
+    kb_ids: frozenset[str]
+    active_version_ids: frozenset[str] = frozenset()
+
+
 class RetrieveOptions:
     def __init__(
         self,
         *,
-        top_k_recall: int = 20,
-        top_k_rerank: int = 6,
-        use_multi_query: bool = True,
+        top_k_recall: int = 50,
+        top_k_rerank: int = 12,
+        use_multi_query: bool = settings.rag_use_query_expansion,
         use_hyde: bool = False,
         use_rerank: bool = True,
         rrf_k: int = 60,
         max_context_chars: int = 6000,
         rerank_mode: str | None = None,
+        relevance_threshold: float = settings.rag_relevance_threshold,
     ) -> None:
         self.top_k_recall = top_k_recall
         self.top_k_rerank = top_k_rerank
@@ -53,6 +74,7 @@ class RetrieveOptions:
         self.rrf_k = rrf_k
         self.max_context_chars = max_context_chars
         self.rerank_mode = rerank_mode or settings.rag_rerank_mode
+        self.relevance_threshold = relevance_threshold
 
 
 class RetrieveService:
@@ -65,18 +87,33 @@ class RetrieveService:
         sparse: SparseSearcher,
         embedder: QueryEmbedder,
         chat: ChatCompleter | None = None,
+        reranker: Reranker | None = None,
+        parent_hydrator: ParentHydrator | None = None,
+        lexical: LexicalSearcher | None = None,
     ) -> None:
         self.dense = dense
         self.sparse = sparse
         self.embedder = embedder
         self.chat = chat
+        self.reranker = reranker
+        self.parent_hydrator = parent_hydrator
+        self.lexical = lexical
 
-    async def retrieve(self, query: str, options: RetrieveOptions | None = None) -> RetrievalResult:
+    async def retrieve(
+        self, query: str, options: RetrieveOptions | None = None, *, scope: RetrievalScope | None = None
+    ) -> RetrievalResult:
         opts = options or RetrieveOptions()
+        if scope is not None and not scope.kb_ids:
+            return RetrievalResult(query=query)
         rewritten = await self._rewrite(query, opts)
-        lists = await asyncio.gather(*[self._hybrid_recall(q, opts) for q in rewritten])
+        lists = await asyncio.gather(*[self._hybrid_recall(q, opts, scope) for q in rewritten])
         fused = reciprocal_rank_fusion(lists, k=opts.rrf_k)
+        if scope is not None:
+            fused = [h for h in fused if h.document_version_id in scope.active_version_ids]
         reranked = await self._rerank(query, fused, opts)
+        if scope and self.parent_hydrator:
+            reranked = await self.parent_hydrator.hydrate(reranked, scope)
+        reranked = [h for h in reranked if h.score >= opts.relevance_threshold]
         context = build_context(reranked, max_chars=opts.max_context_chars)
         return RetrievalResult(
             query=query,
@@ -128,12 +165,18 @@ class RetrieveService:
                 unique.append(q)
         return unique
 
-    async def _hybrid_recall(self, query: str, opts: RetrieveOptions) -> list[RetrievalHit]:
+    async def _hybrid_recall(
+        self, query: str, opts: RetrieveOptions, scope: RetrievalScope | None
+    ) -> list[RetrievalHit]:
         vec = (await self.embedder.embed([query]))[0]
         sparse = bm25_sparse(query)
+        sparse_task = (
+            self.lexical.search(query, opts.top_k_recall, tenant_id=scope.tenant_id, kb_ids=set(scope.kb_ids))
+            if self.lexical and scope is not None
+            else self.sparse.search(sparse, opts.top_k_recall, scope=scope)
+        )
         dense_hits, sparse_hits = await asyncio.gather(
-            self.dense.search(vec, opts.top_k_recall),
-            self.sparse.search(sparse, opts.top_k_recall),
+            self.dense.search(vec, opts.top_k_recall, scope=scope), sparse_task
         )
         return reciprocal_rank_fusion([dense_hits, sparse_hits], k=opts.rrf_k)
 
@@ -146,6 +189,11 @@ class RetrieveService:
         if not opts.use_rerank or not hits:
             return hits[: opts.top_k_rerank]
         candidates = hits[: max(opts.top_k_recall, opts.top_k_rerank)]
+        if self.reranker:
+            try:
+                return await self.reranker.rerank(query, candidates, opts.top_k_rerank)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("reranker unavailable, fallback lexical: %s", exc)
         if opts.rerank_mode == "llm" and self.chat:
             try:
                 return await self._llm_rerank(query, candidates, opts.top_k_rerank)
@@ -185,7 +233,7 @@ class RetrieveService:
         for part in re.split(r"[,，\s]+", content.strip()):
             if part.isdigit():
                 idx = int(part)
-                if 0 <= idx < len(hits) and idx not in order:
+                if 0 <= idx < min(len(hits), 12) and idx not in order:
                     order.append(idx)
         for i in range(len(hits)):
             if i not in order:
@@ -227,7 +275,11 @@ def build_context(hits: list[RetrievalHit], *, max_chars: int) -> str:
     parts: list[str] = []
     used = 0
     for i, hit in enumerate(hits, start=1):
-        block = f"[{i}] source={hit.source} doc={hit.doc_id}\n{hit.text}\n"
+        block = (
+            f"[SOURCE {i} id={hit.chunk_id} doc={hit.doc_id} version={hit.document_version_id or ''} "
+            f"source={hit.source}]\n<untrusted_retrieved_document>\n{hit.text}\n"
+            "</untrusted_retrieved_document>\n"
+        )
         if used + len(block) > max_chars:
             break
         parts.append(block)

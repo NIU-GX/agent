@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from typing import BinaryIO
+
 from shared.config import settings
 from shared.logging import get_logger
 
@@ -29,6 +32,9 @@ class MinioObjectStore:
             logger.info("created minio bucket=%s", self.bucket)
 
     async def get_bytes(self, key: str) -> bytes:
+        return await asyncio.to_thread(self._get_bytes, key)
+
+    def _get_bytes(self, key: str) -> bytes:
         response = self.client.get_object(self.bucket, key)
         try:
             return response.read()
@@ -44,10 +50,18 @@ class MinioObjectStore:
     ) -> None:
         import io
 
+        await self.put_file(key, io.BytesIO(data), len(data), content_type)
+
+    async def put_file(
+        self, key: str, data: BinaryIO, length: int, content_type: str = "application/octet-stream"
+    ) -> None:
+        await asyncio.to_thread(self._put_file, key, data, length, content_type)
+
+    def _put_file(self, key: str, data: BinaryIO, length: int, content_type: str) -> None:
         self.client.put_object(
             self.bucket,
             key,
-            io.BytesIO(data),
-            length=len(data),
+            data,
+            length=length,
             content_type=content_type,
         )

@@ -1,6 +1,7 @@
 replicaCount:
   api: 2
   worker: 2
+  parser: 1
   web: 1
   litellm: 1
 
@@ -9,6 +10,8 @@ image:
   worker: agent-platform/worker:0.1.0
   web: agent-platform/web:0.1.0
   litellm: ghcr.io/berriai/litellm:main-stable
+  opensearch: opensearchproject/opensearch:2.14.0
+  reranker: ghcr.io/flagopen/flagembedding:latest
   pullPolicy: IfNotPresent
 
 service:
@@ -36,6 +39,12 @@ env:
   LLM_FALLBACK_CHAT_MODEL: gpt-4o-mini
   AGENT_ENABLE_CHECKPOINT: "true"
   RAG_RERANK_MODE: llm
+  OPENSEARCH_URL: ""
+  OPENSEARCH_INDEX: kb_chunks_v2
+  RERANKER_URL: ""
+  AUTO_CREATE_SCHEMA: "false"
+  RAG_MAX_UPLOAD_BYTES: "26214400"
+  RAG_PARSER_TIMEOUT_SECONDS: "90"
 
 secrets:
   APP_API_KEY: change-me
@@ -43,6 +52,7 @@ secrets:
   OPENAI_API_KEY: sk-xxx
   ANTHROPIC_API_KEY: ""
   POSTGRES_PASSWORD: agent
+  API_KEY_PEPPER: change-me
 
 resources:
   api:
@@ -55,6 +65,13 @@ resources:
   worker:
     requests:
       cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  parser:
+    requests:
+      cpu: 250m
       memory: 512Mi
     limits:
       cpu: "1"

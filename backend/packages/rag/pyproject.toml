@@ -10,6 +10,7 @@ dependencies = [
   "pymilvus>=2.4,<3",
   "minio>=7.2",
   "pypdf>=5.0",
+  "httpx>=0.28",
 ]
 
 [build-system]

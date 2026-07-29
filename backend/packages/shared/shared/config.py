@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     # 基础设施不可用时是否允许内存兜底（仅本地单测建议 true）
     allow_inmemory_fallback: bool = Field(default=False)
+    auto_create_schema: bool = Field(
+        default=False,
+        description="仅开发/测试自动建表；生产必须由 Alembic 管理 schema",
+    )
+    api_key_pepper: str = Field(default="dev-api-key-pepper-change-me")
+    legacy_tenant_id: str = "legacy"
+    legacy_knowledge_base_id: str = "legacy-default"
 
     # --- Postgres：业务元数据 + LangGraph checkpoint ---
     postgres_host: str = "localhost"
@@ -48,6 +55,21 @@ class Settings(BaseSettings):
     milvus_port: int = 19530
     milvus_collection: str = "kb_chunks"
     milvus_dim: int = 1536
+    milvus_collection_v2: str = "kb_chunks_v2"
+
+    # --- RAG production controls ---
+    rag_max_upload_bytes: int = 25 * 1024 * 1024
+    rag_max_pdf_pages: int = 300
+    rag_max_docx_uncompressed_bytes: int = 100 * 1024 * 1024
+    rag_max_docx_compression_ratio: int = 100
+    rag_parser_timeout_seconds: int = 90
+    rag_stage_lease_seconds: int = 300
+    rag_outbox_batch_size: int = 100
+    rag_relevance_threshold: float = 0.35
+    rag_use_query_expansion: bool = False
+    opensearch_url: str = ""
+    opensearch_index: str = "kb_chunks_v2"
+    reranker_url: str = ""
 
     # --- LLM：业务只连 LiteLLM Proxy（一把 Proxy sk）---
     # 厂商真 key 不在此配置，见 deploy/litellm/.env

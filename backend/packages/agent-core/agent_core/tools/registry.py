@@ -20,7 +20,7 @@ ToolHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
 class Retriever(Protocol):
-    async def retrieve(self, query: str) -> Any: ...
+    async def retrieve(self, query: str, *, scope: dict[str, Any] | None = None) -> Any: ...
 
 
 class ToolRegistry:
@@ -370,7 +370,7 @@ class ToolRegistry:
             if name.startswith("mcp_"):
                 return await self.mcp.call(name, arguments)
             return {"ok": False, "error": f"unknown tool: {name}"}
-        if name in {"list_tools", "activate_skill", "list_skills"}:
+        if name in {"list_tools", "activate_skill", "list_skills", "retrieve"}:
             return await handler({**(arguments or {}), "__state__": state or {}})
         return await handler(arguments or {})
 
@@ -411,7 +411,7 @@ class ToolRegistry:
     async def _handle_retrieve(self, arguments: dict[str, Any]) -> dict[str, Any]:
         if not self.retriever:
             return {"ok": False, "error": "retriever not configured"}
-        result = await self.retriever.retrieve(arguments["query"])
+        result = await self.retriever.retrieve(arguments["query"], scope=arguments.get("__state__", {}).get("retrieval_scope"))
         return {
             "ok": True,
             "context": getattr(result, "context_text", ""),

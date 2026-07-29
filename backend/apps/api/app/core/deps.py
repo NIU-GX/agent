@@ -13,11 +13,13 @@ from agent_core.skills import SkillRegistry, filesystem_skill_seeds
 from agent_core.tools import ToolRegistry
 from llm_gateway import LLMGateway, build_rate_limiter
 from rag.mq import RagPublisher, declare_topology
-from rag.retrieve import RetrieveService
-from rag.store import InMemoryVectorStore, MinioObjectStore, MilvusVectorStore
+from rag.retrieve import RetrievalScope, RetrieveService
+from rag.store import InMemoryVectorStore, MinioObjectStore, MilvusVectorStore, OpenSearchLexicalStore
+from rag.retrieve.reranker import HttpReranker
 from shared.config import settings
 from shared.db import Database, PostgresStatusStore, PostgresUsageRecorder
 from shared.logging import get_logger
+from shared.rag_store import ProductionRagStore
 from shared.mcp_store import McpStore
 from shared.prompt_store import PromptStore
 from shared.skill_store import SkillStore
@@ -45,6 +47,7 @@ class AppState:
     skill_store: SkillStore
     mcp_store: McpStore
     capability_sync: CapabilitySync
+    rag_store: ProductionRagStore
     rabbit_conn: aio_pika.RobustConnection | None = None
     publisher: RagPublisher | None = None
 
@@ -66,8 +69,17 @@ class _RetrieveAdapter:
     def __init__(self, service: RetrieveService) -> None:
         self.service = service
 
-    async def retrieve(self, query: str):
-        return await self.service.retrieve(query)
+    async def retrieve(self, query: str, *, scope: dict[str, Any] | None = None):
+        resolved = None
+        if scope:
+            kb_ids = frozenset(scope.get("kb_ids") or [])
+            tenant_id = str(scope.get("tenant_id") or "")
+            resolved = RetrievalScope(
+                tenant_id=tenant_id,
+                kb_ids=kb_ids,
+                active_version_ids=frozenset(scope.get("active_version_ids") or []),
+            )
+        return await self.service.retrieve(query, scope=resolved)
 
 
 async def _build_vector_store() -> Any:
@@ -125,8 +137,10 @@ async def get_app_state() -> AppState:
         return _STATE
 
     db = Database()
-    await db.create_tables()
+    await db.ensure_schema()
     status = PostgresStatusStore(db)
+    rag_store = ProductionRagStore(db)
+    await rag_store.bootstrap_legacy()
     # 提示词管理为独立能力；仅在此装配层与 Agent 端口对接
     prompts = PromptStore(db)
     await prompts.ensure_defaults(BUILTIN_PROMPT_SEEDS)
@@ -146,18 +160,36 @@ async def get_app_state() -> AppState:
     object_store = await _build_object_store()
 
     class _Dense:
-        async def search(self, vector, top_k):
-            return await vector_store.search(vector, top_k)
+        async def search(self, vector, top_k, *, scope=None):
+            return await vector_store.search(
+                vector, top_k, tenant_id=getattr(scope, "tenant_id", None), kb_ids=set(getattr(scope, "kb_ids", set()))
+            )
 
     class _Sparse:
-        async def search(self, sparse, top_k):
-            return await vector_store.sparse_search(sparse, top_k)
+        async def search(self, sparse, top_k, *, scope=None):
+            return await vector_store.sparse_search(
+                sparse, top_k, tenant_id=getattr(scope, "tenant_id", None), kb_ids=set(getattr(scope, "kb_ids", set()))
+            )
+
+    class _Parents:
+        async def hydrate(self, hits, scope):
+            return await rag_store.hydrate_parent_hits(
+                hits, active_version_ids=set(scope.active_version_ids)
+            )
+
+    lexical = OpenSearchLexicalStore() if settings.opensearch_url else None
+    if lexical:
+        await lexical.ensure_index()
+    reranker = HttpReranker(settings.reranker_url) if settings.reranker_url else None
 
     retrieve = RetrieveService(
         dense=_Dense(),
         sparse=_Sparse(),
         embedder=llm,
         chat=llm,
+        parent_hydrator=_Parents(),
+        lexical=lexical,
+        reranker=reranker,
     )
     hosts = [h.strip() for h in (settings.allowed_http_hosts or "").split(",") if h.strip()]
     skills = SkillRegistry(settings.skills_dir, load_filesystem=False)
@@ -205,6 +237,7 @@ async def get_app_state() -> AppState:
         skill_store=skill_store,
         mcp_store=mcp_store,
         capability_sync=capability_sync,
+        rag_store=rag_store,
         rabbit_conn=rabbit_conn,
         publisher=publisher,
     )

@@ -15,6 +15,7 @@ class AgentState(TypedDict, total=False):
     message: str
     strategy: str
     enable_rag: bool
+    retrieval_scope: dict[str, Any]
     thoughts: Annotated[list[str], merge_lists]
     plan_steps: list[str]
     current_step: int

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -90,8 +91,10 @@ class RagPublisher:
                 content_type="application/json",
                 delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                 headers={"x-attempt": message.attempt},
+                message_id=message.outbox_event_id,
             ),
             routing_key=queue_name,
+            mandatory=True,
         )
         logger.info(
             "published job_id=%s doc_id=%s stage=%s attempt=%s",
@@ -102,7 +105,34 @@ class RagPublisher:
         )
 
 
-ConsumerHandler = Callable[[QueueMessage], Awaitable[None]]
+class OutboxDispatcher:
+    """轮询 Postgres Outbox；发布确认后才标记事件完成。"""
+
+    def __init__(self, *, store: Any, poll_seconds: float = 0.5) -> None:
+        self.store = store
+        self.poll_seconds = poll_seconds
+
+    async def run(self, connection: aio_pika.RobustConnection) -> None:
+        channel = await connection.channel(publisher_confirms=True)
+        exchange = await declare_topology(channel)
+        publisher = RagPublisher(channel, exchange)
+        while True:
+            events = await self.store.pending_outbox()
+            if not events:
+                await asyncio.sleep(self.poll_seconds)
+                continue
+            for event in events:
+                try:
+                    payload = dict(event["payload"])
+                    payload["outbox_event_id"] = event["id"]
+                    await publisher.publish(QueueMessage.model_validate(payload))
+                    await self.store.mark_outbox_published(event["id"])
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("outbox publish failed event=%s", event["id"])
+                    await self.store.mark_outbox_failed(event["id"], str(exc))
+
+
+ConsumerHandler = Callable[[QueueMessage], Awaitable[bool | None]]
 
 
 class RagConsumer:
@@ -140,10 +170,10 @@ class RagConsumer:
             raw: dict[str, Any] = json.loads(incoming.body.decode("utf-8"))
             msg = QueueMessage.model_validate(raw)
             try:
-                await self.handler(msg)
+                advance = await self.handler(msg)
                 # 成功后推进下一阶段
                 nxt = NEXT_STAGE.get(self.stage)
-                if nxt is not None:
+                if nxt is not None and advance is not False:
                     await publisher.publish(
                         QueueMessage(
                             job_id=msg.job_id,

@@ -80,6 +80,17 @@ services:
     volumes:
       - milvus_data:/var/lib/milvus
 
+  opensearch:
+    image: opensearchproject/opensearch:2.14.0
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
     ports:
@@ -115,6 +126,7 @@ services:
       MILVUS_HOST: milvus
       MINIO_ENDPOINT: minio:9000
       LLM_BASE_URL: http://litellm:4000
+      OPENSEARCH_URL: http://opensearch:9200
       ALLOW_INMEMORY_FALLBACK: "false"
     volumes:
       - ../data:/app/data
@@ -145,6 +157,7 @@ services:
       MILVUS_HOST: milvus
       MINIO_ENDPOINT: minio:9000
       LLM_BASE_URL: http://litellm:4000
+      OPENSEARCH_URL: http://opensearch:9200
       ALLOW_INMEMORY_FALLBACK: "false"
     ports:
       - "8000:8000"
@@ -178,3 +191,4 @@ volumes:
   minio_data:
   etcd_data:
   milvus_data:
+  opensearch_data:

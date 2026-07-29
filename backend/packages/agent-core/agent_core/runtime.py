@@ -138,6 +138,7 @@ class AgentRuntime:
         session_id: str | None = None,
         resume_value: Any | None = None,
         skills: list[str] | None = None,
+        retrieval_scope: dict[str, Any] | None = None,
     ) -> AsyncIterator[ChatEvent]:
         if not self._graphs:
             self._rebuild_graphs(checkpointer=None)
@@ -174,6 +175,7 @@ class AgentRuntime:
             "message": message,
             "strategy": chosen.value,
             "enable_rag": enable_rag,
+            "retrieval_scope": dict(retrieval_scope or {}),
             "thoughts": [],
             "plan_steps": [],
             "current_step": 0,

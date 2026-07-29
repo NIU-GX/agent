@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Float, Integer, String, Text, UniqueConstraint, select
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -93,12 +93,20 @@ class Database:
         # 确保扩展模型已注册到同一 Base.metadata
         import shared.mcp_store  # noqa: F401
         import shared.prompt_store  # noqa: F401
+        import shared.rag_store  # noqa: F401
         import shared.skill_store  # noqa: F401
         import shared.tool_store  # noqa: F401
 
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("postgres schema ready")
+
+    async def ensure_schema(self) -> None:
+        """开发环境建表；生产只允许由 Alembic 迁移管理 schema。"""
+        if settings.app_env == "prod" and not settings.auto_create_schema:
+            logger.info("schema auto-create disabled; expecting Alembic-managed schema")
+            return
+        await self.create_tables()
 
     async def aclose(self) -> None:
         await self.engine.dispose()

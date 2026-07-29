@@ -41,6 +41,10 @@ class RetrievalHit(BaseModel):
     source: str = ""
     score: float = 0.0
     metadata: dict[str, Any] = Field(default_factory=dict)
+    parent_id: str | None = None
+    tenant_id: str | None = None
+    kb_id: str | None = None
+    document_version_id: str | None = None
 
 
 class RetrievalResult(BaseModel):
@@ -61,3 +65,7 @@ class QueueMessage(BaseModel):
     payload_ref: str = Field(description="MinIO object key 或阶段中间产物路径")
     attempt: int = 0
     content_hash: str | None = None
+    document_version_id: str | None = None
+    tenant_id: str | None = None
+    kb_id: str | None = None
+    outbox_event_id: str | None = None

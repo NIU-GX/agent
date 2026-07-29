@@ -7,6 +7,12 @@ data:
   RABBITMQ_URL: {{ .Values.env.RABBITMQ_URL | quote }}
   REDIS_URL: {{ .Values.env.REDIS_URL | quote }}
   MILVUS_HOST: {{ .Values.env.MILVUS_HOST | quote }}
+  OPENSEARCH_URL: {{ .Values.env.OPENSEARCH_URL | quote }}
+  OPENSEARCH_INDEX: {{ .Values.env.OPENSEARCH_INDEX | quote }}
+  RERANKER_URL: {{ .Values.env.RERANKER_URL | quote }}
+  AUTO_CREATE_SCHEMA: {{ .Values.env.AUTO_CREATE_SCHEMA | quote }}
+  RAG_MAX_UPLOAD_BYTES: {{ .Values.env.RAG_MAX_UPLOAD_BYTES | quote }}
+  RAG_PARSER_TIMEOUT_SECONDS: {{ .Values.env.RAG_PARSER_TIMEOUT_SECONDS | quote }}
   POSTGRES_HOST: {{ .Values.env.POSTGRES_HOST | quote }}
   LLM_BASE_URL: {{ .Values.env.LLM_BASE_URL | default (printf "http://%s-litellm:4000" .Release.Name) | quote }}
   LLM_CHAT_MODEL: {{ .Values.env.LLM_CHAT_MODEL | default "gpt-4o-mini" | quote }}
@@ -26,3 +32,4 @@ stringData:
   OPENAI_API_KEY: {{ .Values.secrets.OPENAI_API_KEY | quote }}
   ANTHROPIC_API_KEY: {{ .Values.secrets.ANTHROPIC_API_KEY | quote }}
   POSTGRES_PASSWORD: {{ .Values.secrets.POSTGRES_PASSWORD | quote }}
+  API_KEY_PEPPER: {{ .Values.secrets.API_KEY_PEPPER | default "change-me" | quote }}
