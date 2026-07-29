@@ -9,21 +9,25 @@ from shared.config import settings
 from shared.logging import get_logger
 from shared.schemas import AgentStrategy
 
+from agent_core.prompts import BuiltinPromptProvider, PromptProvider
+
 logger = get_logger(__name__)
 
 
-async def llm_route_strategy(llm: Any, message: str) -> AgentStrategy:
+async def llm_route_strategy(
+    llm: Any,
+    message: str,
+    *,
+    prompts: PromptProvider | None = None,
+) -> AgentStrategy:
     """用 LLM 做策略路由；失败时回退启发式。"""
+    provider = prompts or BuiltinPromptProvider()
     try:
         body = await llm.chat(
             [
                 {
                     "role": "system",
-                    "content": (
-                        "你是 Agent 策略路由器。只输出一个词："
-                        "cot | react | plan_execute。"
-                        "cot=纯推理解释；react=需要工具/检索；plan_execute=复杂多步。"
-                    ),
+                    "content": provider.get("router.system"),
                 },
                 {"role": "user", "content": message},
             ],
@@ -53,18 +57,16 @@ async def critic_answer(
     answer: str,
     context: str,
     require_citation: bool,
+    prompts: PromptProvider | None = None,
 ) -> dict[str, Any]:
     """LLM Critic：检查幻觉与是否需要修订。"""
     if not answer.strip():
         return {"pass": False, "revised": "未能生成有效回答。", "reason": "empty"}
+    provider = prompts or BuiltinPromptProvider()
     prompt = [
         {
             "role": "system",
-            "content": (
-                "你是答案审查员。输出 JSON："
-                '{"pass": true/false, "reason": "...", "revised": "必要时给出修订后的完整答案"}。'
-                "若上下文不足却给出具体事实，应 pass=false。"
-            ),
+            "content": provider.get("critic.system"),
         },
         {
             "role": "user",

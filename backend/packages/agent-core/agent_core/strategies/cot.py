@@ -7,11 +7,20 @@ from typing import Any
 from langgraph.graph import END, StateGraph
 
 from agent_core.nodes import critic_answer
+from agent_core.prompts import BuiltinPromptProvider, PromptProvider
 from agent_core.state import AgentState
 from agent_core.tools.registry import ToolRegistry
 
 
-def build_cot_graph(*, llm: Any, tools: ToolRegistry, checkpointer: Any = None):
+def build_cot_graph(
+    *,
+    llm: Any,
+    tools: ToolRegistry,
+    checkpointer: Any = None,
+    prompts: PromptProvider | None = None,
+):
+    provider = prompts or BuiltinPromptProvider()
+
     async def retrieve_once(state: AgentState) -> dict[str, Any]:
         if not state.get("enable_rag"):
             return {}
@@ -25,11 +34,7 @@ def build_cot_graph(*, llm: Any, tools: ToolRegistry, checkpointer: Any = None):
         }
 
     async def think(state: AgentState) -> dict[str, Any]:
-        system = (
-            "你是严谨的企业助手。请使用逐步推理（Chain-of-Thought），"
-            "先写出简短推理步骤，再给出结论。格式：推理:\\n...\\n回答:\\n..."
-            "若有上下文，必须基于上下文并注明依据。"
-        )
+        system = provider.get("cot.system")
         skill_body = "\n\n".join(state.get("skill_instructions") or [])
         if skill_body:
             system += f"\n\n## 已激活 Skill 指令\n{skill_body}"
@@ -63,6 +68,7 @@ def build_cot_graph(*, llm: Any, tools: ToolRegistry, checkpointer: Any = None):
             answer=state.get("final_answer") or "",
             context=state.get("context") or "",
             require_citation=bool(state.get("enable_rag") and state.get("context")),
+            prompts=provider,
         )
         if result["pass"]:
             return {"done": True, "thoughts": [f"Critic 通过: {result.get('reason', 'ok')}"]}

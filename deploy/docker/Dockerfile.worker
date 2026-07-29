@@ -3,17 +3,17 @@ FROM python:3.12-slim
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
 
-COPY packages/shared /app/packages/shared
-COPY packages/llm-gateway /app/packages/llm-gateway
-COPY packages/rag /app/packages/rag
-COPY apps/rag-worker /app/apps/rag-worker
+COPY backend/packages/shared /app/backend/packages/shared
+COPY backend/packages/llm-gateway /app/backend/packages/llm-gateway
+COPY backend/packages/rag /app/backend/packages/rag
+COPY backend/apps/rag-worker /app/backend/apps/rag-worker
 
 RUN pip install --no-cache-dir \
-  /app/packages/shared \
-  /app/packages/llm-gateway \
-  /app/packages/rag \
-  /app/apps/rag-worker
+  /app/backend/packages/shared \
+  /app/backend/packages/llm-gateway \
+  /app/backend/packages/rag \
+  /app/backend/apps/rag-worker
 
-ENV PYTHONPATH=/app/apps/rag-worker
-WORKDIR /app/apps/rag-worker
+ENV PYTHONPATH=/app/backend/apps/rag-worker
+WORKDIR /app/backend/apps/rag-worker
 CMD ["python", "-m", "worker.main"]

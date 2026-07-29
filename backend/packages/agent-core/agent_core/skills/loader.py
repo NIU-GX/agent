@@ -15,7 +15,7 @@ class Skill:
     name: str
     description: str
     body: str
-    path: Path
+    path: Path | None = None
     tools: list[str] = field(default_factory=list)
     mcp: list[str] = field(default_factory=list)
 
@@ -26,6 +26,18 @@ class Skill:
             "tools": list(self.tools),
             "mcp": list(self.mcp),
         }
+
+
+def skill_from_record(record: dict[str, Any]) -> Skill:
+    """从 Store/API 记录构造 Skill（无文件系统 path）。"""
+    return Skill(
+        name=str(record.get("name") or "").strip(),
+        description=str(record.get("description") or ""),
+        body=str(record.get("body") or ""),
+        path=None,
+        tools=[str(x).strip() for x in (record.get("tools") or []) if str(x).strip()],
+        mcp=[str(x).strip() for x in (record.get("mcp") or []) if str(x).strip()],
+    )
 
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?(.*)\Z", re.DOTALL)

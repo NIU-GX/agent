@@ -9,20 +9,26 @@ from langgraph.graph import END, StateGraph
 from shared.config import settings
 
 from agent_core.nodes import critic_answer
+from agent_core.prompts import BuiltinPromptProvider, PromptProvider
 from agent_core.state import AgentState
 from agent_core.tools.registry import ToolRegistry
 
 
-def build_plan_execute_graph(*, llm: Any, tools: ToolRegistry, checkpointer: Any = None):
+def build_plan_execute_graph(
+    *,
+    llm: Any,
+    tools: ToolRegistry,
+    checkpointer: Any = None,
+    prompts: PromptProvider | None = None,
+):
+    provider = prompts or BuiltinPromptProvider()
+
     async def planner(state: AgentState) -> dict[str, Any]:
         body = await llm.chat(
             [
                 {
                     "role": "system",
-                    "content": (
-                        "你是任务规划器。将用户问题拆成 2-5 个可执行步骤，"
-                        "每行一个步骤，不要编号之外的废话。步骤应尽量可检索或可计算。"
-                    ),
+                    "content": provider.get("plan_execute.planner"),
                 },
                 {"role": "user", "content": state["message"]},
             ]
@@ -121,7 +127,7 @@ def build_plan_execute_graph(*, llm: Any, tools: ToolRegistry, checkpointer: Any
         if calc_hint and calc_hint.get("ok"):
             user_content += f"\n计算结果: {calc_hint.get('result')}"
         skill_body = "\n\n".join(state.get("skill_instructions") or [])
-        system = "你正在执行多步计划中的单步。只完成本步，给出简洁中文结论。"
+        system = provider.get("plan_execute.executor")
         if skill_body:
             system += f"\n\n已激活 Skill:\n{skill_body}"
 
@@ -154,7 +160,7 @@ def build_plan_execute_graph(*, llm: Any, tools: ToolRegistry, checkpointer: Any
             [
                 {
                     "role": "system",
-                    "content": "将各步骤结论汇总为最终回答，保留关键依据，中文输出。",
+                    "content": provider.get("plan_execute.synthesizer"),
                 },
                 {
                     "role": "user",
@@ -178,6 +184,7 @@ def build_plan_execute_graph(*, llm: Any, tools: ToolRegistry, checkpointer: Any
             answer=state.get("final_answer") or "",
             context=state.get("context") or "",
             require_citation=True,
+            prompts=provider,
         )
         return {
             "final_answer": result["revised"],

@@ -2,16 +2,19 @@ replicaCount:
   api: 2
   worker: 2
   web: 1
+  litellm: 1
 
 image:
   api: agent-platform/api:0.1.0
   worker: agent-platform/worker:0.1.0
   web: agent-platform/web:0.1.0
+  litellm: ghcr.io/berriai/litellm:main-stable
   pullPolicy: IfNotPresent
 
 service:
   apiPort: 8000
   webPort: 80
+  litellmPort: 4000
 
 ingress:
   enabled: true
@@ -26,8 +29,20 @@ env:
   MILVUS_HOST: milvus
   MINIO_ENDPOINT: minio:9000
   POSTGRES_HOST: postgres
+  # 留空则模板默认 http://<release>-litellm:4000
+  LLM_BASE_URL: ""
+  LLM_CHAT_MODEL: gpt-4o-mini
+  LLM_EMBED_MODEL: text-embedding-3-small
+  LLM_FALLBACK_CHAT_MODEL: gpt-4o-mini
   AGENT_ENABLE_CHECKPOINT: "true"
   RAG_RERANK_MODE: llm
+
+secrets:
+  APP_API_KEY: change-me
+  LITELLM_MASTER_KEY: sk-litellm-master
+  OPENAI_API_KEY: sk-xxx
+  ANTHROPIC_API_KEY: ""
+  POSTGRES_PASSWORD: agent
 
 resources:
   api:
@@ -41,6 +56,13 @@ resources:
     requests:
       cpu: 200m
       memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  litellm:
+    requests:
+      cpu: 100m
+      memory: 256Mi
     limits:
       cpu: "1"
       memory: 1Gi

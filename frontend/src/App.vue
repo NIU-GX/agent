@@ -42,7 +42,8 @@ const route = useRoute()
 
 const nav = [
   { to: '/', label: '对话', hint: 'Chat' },
-  { to: '/capabilities', label: '能力', hint: 'Tools' },
+  { to: '/capabilities', label: '能力', hint: 'CRUD' },
+  { to: '/prompts', label: '提示词', hint: 'Prompts' },
   { to: '/docs', label: '知识库', hint: 'Docs' },
   { to: '/eval', label: '评测', hint: 'Eval' },
   { to: '/usage', label: '用量', hint: 'Usage' },

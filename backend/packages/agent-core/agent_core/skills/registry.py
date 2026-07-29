@@ -8,7 +8,7 @@ from typing import Any
 
 from shared.logging import get_logger
 
-from agent_core.skills.loader import Skill, discover_skills
+from agent_core.skills.loader import Skill, discover_skills, skill_from_record
 
 logger = get_logger(__name__)
 
@@ -28,21 +28,62 @@ def _resolve_skills_dir(path: str | Path) -> Path:
     return (here / p).resolve()
 
 
-class SkillRegistry:
-    """项目级 Skills：渐进式披露入口。"""
+def filesystem_skill_seeds(skills_dir: str | Path | None = None) -> list[dict[str, Any]]:
+    """扫描 SKILL.md，转为 Store 种子（不写运行时 registry）。"""
+    root = _resolve_skills_dir(skills_dir or "skills")
+    seeds: list[dict[str, Any]] = []
+    for skill in discover_skills(root):
+        seeds.append(
+            {
+                "name": skill.name,
+                "description": skill.description,
+                "body": skill.body,
+                "tools": list(skill.tools),
+                "mcp": list(skill.mcp),
+                "enabled": True,
+            }
+        )
+    return seeds
 
-    def __init__(self, skills_dir: str | Path | None = None) -> None:
+
+class SkillRegistry:
+    """项目级 Skills：渐进式披露入口；运行时以 records 为源。"""
+
+    def __init__(
+        self,
+        skills_dir: str | Path | None = None,
+        *,
+        load_filesystem: bool = False,
+    ) -> None:
         self._root = _resolve_skills_dir(skills_dir or "skills")
         self._skills: dict[str, Skill] = {}
-        self.reload()
+        if load_filesystem:
+            self.reload()
 
     @property
     def root(self) -> Path:
         return self._root
 
     def reload(self) -> None:
+        """从文件系统重新加载（兼容；生产以 reload_from 为准）。"""
         self._skills = {s.name: s for s in discover_skills(self._root)}
         logger.info("skills loaded count=%s dir=%s", len(self._skills), self._root)
+
+    def reload_from(self, records: list[dict[str, Any]]) -> None:
+        """用 Store 启用记录替换内存目录。"""
+        skills: dict[str, Skill] = {}
+        for rec in records:
+            if not rec.get("enabled", True):
+                continue
+            skill = skill_from_record(rec)
+            if not skill.name:
+                continue
+            skills[skill.name] = skill
+        self._skills = skills
+        logger.info("skills reloaded from records count=%s", len(self._skills))
+
+    def load_from_records(self, records: list[dict[str, Any]]) -> None:
+        self.reload_from(records)
 
     def catalog(self) -> list[dict[str, Any]]:
         """L0：name + description（及绑定声明）。"""
@@ -88,6 +129,8 @@ class SkillRegistry:
         skill = self._skills.get(skill_name)
         if not skill:
             return {"ok": False, "error": f"unknown skill: {skill_name}"}
+        if skill.path is None:
+            return {"ok": False, "error": "skill has no filesystem path for scripts"}
         scripts_dir = (skill.path.parent / "scripts").resolve()
         if not scripts_dir.is_dir():
             return {"ok": False, "error": "no scripts directory"}

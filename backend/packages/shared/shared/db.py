@@ -82,10 +82,20 @@ class Database:
 
     def __init__(self, dsn: Optional[str] = None) -> None:
         self.dsn = dsn or settings.postgres_dsn
-        self.engine = create_async_engine(self.dsn, pool_pre_ping=True, pool_size=5)
+        kwargs: Dict[str, Any] = {"pool_pre_ping": True}
+        # SQLite（单测）不支持 QueuePool 的 pool_size
+        if not self.dsn.startswith("sqlite"):
+            kwargs["pool_size"] = 5
+        self.engine = create_async_engine(self.dsn, **kwargs)
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
 
     async def create_tables(self) -> None:
+        # 确保扩展模型已注册到同一 Base.metadata
+        import shared.mcp_store  # noqa: F401
+        import shared.prompt_store  # noqa: F401
+        import shared.skill_store  # noqa: F401
+        import shared.tool_store  # noqa: F401
+
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("postgres schema ready")

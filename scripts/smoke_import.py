@@ -26,7 +26,7 @@ def main() -> None:
     assert callable(build_plan_execute_graph)
     assert LLMGateway is not None
     assert RetrieveService is not None
-    skills = SkillRegistry(settings.skills_dir)
+    skills = SkillRegistry(settings.skills_dir, load_filesystem=True)
     tools = ToolRegistry(skills=skills)
     assert any(t["name"] == "retrieve" for t in tools.catalog())
     assert "activate_skill" in [
@@ -37,6 +37,18 @@ def main() -> None:
     ]
     # 延迟导入：确认 ORM 模型可加载
     from shared.db import Database, PostgresStatusStore  # noqa: F401
+    from shared.prompt_store import PromptStore  # noqa: F401
+    from shared.tool_store import ToolStore  # noqa: F401
+    from shared.skill_store import SkillStore  # noqa: F401
+    from shared.mcp_store import McpStore  # noqa: F401
+    from agent_core.prompts import BuiltinPromptProvider, BUILTIN_PROMPT_SEEDS
+
+    assert BuiltinPromptProvider().get("cot.system")
+    assert len(BUILTIN_PROMPT_SEEDS) >= 5
+    assert PromptStore is not None
+    assert ToolStore is not None
+    assert SkillStore is not None
+    assert McpStore is not None
 
     print("smoke ok")
 

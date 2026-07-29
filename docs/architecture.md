@@ -6,15 +6,15 @@
 
 ```mermaid
 flowchart TB
-  subgraph frontend [Frontend apps/web]
+  subgraph frontend [Frontend frontend/]
     SPA[Vue3 SPA]
   end
-  subgraph backend [Backend apps/api]
+  subgraph backend [Backend backend/apps/api]
     API[FastAPI /api/v1]
     Caps[Capabilities 发现]
     Chat[Chat SSE]
   end
-  subgraph runtime [Agent Runtime packages/agent-core]
+  subgraph runtime [Agent Runtime backend/packages/agent-core]
     Strategies[CoT / ReAct / Plan-Execute]
     Tools[ToolRegistry]
     MCP[McpToolBridge]
@@ -46,11 +46,11 @@ flowchart TB
 
 | 层 | 路径 | 职责 |
 |----|------|------|
-| **Frontend** | `apps/web` | 管理台与对话 UI；统一 `/api/v1` 客户端；渲染 SSE 时间线 |
-| **Backend API** | `apps/api` | 鉴权、对话 SSE、文档/Eval/用量、能力发现 |
-| **Agent Runtime** | `packages/agent-core` | LangGraph 策略、checkpoint、HITL、Tool/MCP/Skill |
-| **RAG / Shared** | `packages/rag`、`shared`、`llm-gateway`、`eval` | 检索入库、配置 Schema、网关、评测 |
-| **Worker** | `apps/rag-worker` | RabbitMQ 消费者：parse → chunk → embed → index |
+| **Frontend** | `frontend/` | 管理台与对话 UI；统一 `/api/v1` 客户端；渲染 SSE 时间线 |
+| **Backend API** | `backend/apps/api` | 鉴权、对话 SSE、文档/Eval/用量、能力发现与 CRUD、提示词版本 |
+| **Agent Runtime** | `backend/packages/agent-core` | LangGraph 策略、checkpoint、HITL、Tool/MCP/Skill |
+| **RAG / Shared** | `backend/packages/{rag,shared,llm-gateway,eval}` | 检索入库、配置 Schema、网关、评测、能力 Store |
+| **Worker** | `backend/apps/rag-worker` | RabbitMQ 消费者：parse → chunk → embed → index |
 
 ## 2. 前后端契约
 
@@ -58,10 +58,21 @@ flowchart TB
 - 鉴权头：`X-API-Key`。
 - 对话：`POST /chat/stream`、`POST /chat/resume`，响应为 SSE：`event: {type}` + `data: ChatEvent JSON`。
 - **ChatEvent.type**（契约源）：`token` | `thought` | `tool_start` | `tool_end` | `skill_start` | `skill_end` | `plan` | `citation` | `final` | `error` | `strategy` | `hitl`
-- 能力发现：
+- 能力发现（L0 只读，供 Chat/Agent）：
   - `GET /capabilities/tools`
   - `GET /capabilities/skills`（`?name=` 返回 L1 正文）
   - `GET /capabilities/mcp`
+- 能力管理（独立 Store + CRUD，经装配层热注入 Runtime）：
+  - Tools：`GET/POST /tools`，`GET/PUT/DELETE /tools/{name}`，`PATCH /tools/{name}/enabled`
+  - Skills：`GET/POST /skills`，`GET/PUT/DELETE /skills/{name}`，`PATCH /skills/{name}/enabled`
+  - MCP：`GET/POST /mcp`，`GET/PUT/DELETE /mcp/{name}`，`PATCH /mcp/{name}/enabled`，`POST /mcp/{name}/reconnect`
+  - 边界：`ToolStore` / `SkillStore` / `McpStore`（shared）⇄ `CapabilitySync`（API 装配）⇄ `ToolRegistry` / `SkillRegistry` / `McpToolBridge`（agent-core）
+  - 动态 Tool 执行体仅为 **HTTP Webhook**；内置工具只读，可启用/禁用
+- 提示词版本（独立能力，经装配层注入 Agent）：
+  - `GET /prompts` / `GET /prompts/{key}`
+  - `POST /prompts/{key}/versions`（发版，默认同步激活）
+  - `POST /prompts/{key}/rollback`（回退到历史版本号，保留全部版本）
+  - 边界：`PromptStore`（shared）⇄ `PromptStoreProvider`（API 装配）⇄ `PromptProvider` 端口（agent-core）；Agent 默认可仅用内置 Provider 独立运行
 
 ## 3. Tool / MCP / Skill 渐进式披露
 
@@ -73,15 +84,16 @@ flowchart LR
 
 | 层 | Tool | MCP | Skill |
 |----|------|-----|-------|
-| L0 | name + 一行描述进系统提示 | server + tool 名 | `skills/*/SKILL.md` frontmatter |
+| L0 | name + 一行描述进系统提示 | server + tool 名 | Store 中启用 Skill 的 name/description |
 | L1 | 解锁后暴露完整 OpenAI function schema | 解锁后暴露完整 schema | `activate_skill` 注入正文并解锁声明的 tools/mcp |
-| L2 | `ToolRegistry.call` | `McpToolBridge.call` | 可选 `scripts/`（白名单、超时） |
+| L2 | `ToolRegistry.call`（含 Webhook） | `McpToolBridge.call` | 可选 `scripts/`（需文件系统 path） |
 
-- **Core 工具**（始终 L1）：`retrieve`、`calculator`。
-- **Optional / MCP**：默认仅 L0；经 Skill 激活或元工具解锁后进入 LLM `tools=`。
+- **Core 工具**（始终 L1，可禁用）：`retrieve`、`calculator`。
+- **Optional / Webhook / MCP**：默认仅 L0；经 Skill 激活或元工具解锁后进入 LLM `tools=`。
 - **ReAct 元工具**（始终 L1）：`list_skills`、`activate_skill`、`list_tools`。
-- Skills 目录：仓库根 `skills/<name>/SKILL.md`（YAML frontmatter + Markdown）；可配置 `SKILLS_DIR`。
-- MCP：`MCP_SERVERS_JSON` 为 stdio server 列表；启动时连接并缓存 schema，按 unlocked 过滤披露。
+- **持久化**：Postgres（`capability_tools` / `capability_skills` / `capability_mcp_servers`）为运行时源；写操作经 `CapabilitySync` 热注入。
+- **种子**：首次启动从 `skills/*/SKILL.md`（`SKILLS_DIR`）与 `MCP_SERVERS_JSON` 导入，已存在不覆盖；之后以 DB 为准。
+- **Webhook Tool**：CRUD 存 URL/headers/schema；调用时 `httpx` POST JSON arguments。
 
 ## 4. 技术选型
 
@@ -90,7 +102,7 @@ flowchart LR
 | LangGraph | CoT/ReAct/Plan-Execute，checkpoint / HITL |
 | RabbitMQ | 入库工作队列，DLX / 重试 |
 | Milvus | dense + sparse Hybrid + RRF |
-| Postgres | 文档/Job/用量 + LangGraph checkpoint |
+| Postgres | 文档/Job/用量/提示词版本/能力 CRUD + LangGraph checkpoint |
 | Redis | 网关分布式限流 |
 | MinIO | 原文与解析产物 |
 | Vue3 SPA | 管理台与对话 SSE |
@@ -111,9 +123,12 @@ API 上传 → MinIO → 发布 `rag.parse`；Worker：parse → chunk → embed
 
 ## 7. 网关与 Eval
 
-LiteLLM / httpx 适配；Redis 限流、熔断、fallback、用量落库。
+业务 `LLMGateway` 经 LiteLLM SDK 调用 **LiteLLM Proxy**（一把 `LLM_API_KEY` / `LITELLM_MASTER_KEY`）；
+厂商真密钥只配在 Proxy（`deploy/litellm/config.yaml` + 环境变量）。
+网关层另做 Redis 限流、熔断、fallback、用量落库。
 Eval：Retrieval → Generation → Trajectory（含工具/技能轨迹）。
 
 ## 8. 部署
 
-Compose 拉起全栈；Helm 提供副本、探针、HPA（worker）。生产关闭内存兜底，强制 API Key。
+Compose 拉起全栈（含 `litellm` 服务，`:4000`）；Helm 提供 api/worker/web/litellm、探针、HPA（worker）。
+生产关闭内存兜底，强制 API Key。

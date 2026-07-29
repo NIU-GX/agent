@@ -1,8 +1,8 @@
 FROM node:22-alpine AS build
 WORKDIR /web
-COPY apps/web/package.json ./
+COPY frontend/package.json ./
 RUN npm install
-COPY apps/web/ ./
+COPY frontend/ ./
 RUN npm run build
 
 FROM nginx:1.27-alpine

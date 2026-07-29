@@ -8,6 +8,10 @@ data:
   REDIS_URL: {{ .Values.env.REDIS_URL | quote }}
   MILVUS_HOST: {{ .Values.env.MILVUS_HOST | quote }}
   POSTGRES_HOST: {{ .Values.env.POSTGRES_HOST | quote }}
+  LLM_BASE_URL: {{ .Values.env.LLM_BASE_URL | default (printf "http://%s-litellm:4000" .Release.Name) | quote }}
+  LLM_CHAT_MODEL: {{ .Values.env.LLM_CHAT_MODEL | default "gpt-4o-mini" | quote }}
+  LLM_EMBED_MODEL: {{ .Values.env.LLM_EMBED_MODEL | default "text-embedding-3-small" | quote }}
+  LLM_FALLBACK_CHAT_MODEL: {{ .Values.env.LLM_FALLBACK_CHAT_MODEL | default "gpt-4o-mini" | quote }}
 ---
 apiVersion: v1
 kind: Secret
@@ -15,6 +19,10 @@ metadata:
   name: {{ .Release.Name }}-secrets
 type: Opaque
 stringData:
-  APP_API_KEY: "change-me"
-  LLM_API_KEY: "sk-xxx"
-  POSTGRES_PASSWORD: "agent"
+  APP_API_KEY: {{ .Values.secrets.APP_API_KEY | quote }}
+  # 业务与 Proxy 共用这一把 sk
+  LLM_API_KEY: {{ .Values.secrets.LITELLM_MASTER_KEY | quote }}
+  LITELLM_MASTER_KEY: {{ .Values.secrets.LITELLM_MASTER_KEY | quote }}
+  OPENAI_API_KEY: {{ .Values.secrets.OPENAI_API_KEY | quote }}
+  ANTHROPIC_API_KEY: {{ .Values.secrets.ANTHROPIC_API_KEY | quote }}
+  POSTGRES_PASSWORD: {{ .Values.secrets.POSTGRES_PASSWORD | quote }}

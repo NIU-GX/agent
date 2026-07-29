@@ -16,13 +16,13 @@ dependencies = [
 
 [tool.uv.workspace]
 members = [
-  "packages/shared",
-  "packages/llm-gateway",
-  "packages/rag",
-  "packages/agent-core",
-  "packages/eval",
-  "apps/api",
-  "apps/rag-worker",
+  "backend/packages/shared",
+  "backend/packages/llm-gateway",
+  "backend/packages/rag",
+  "backend/packages/agent-core",
+  "backend/packages/eval",
+  "backend/apps/api",
+  "backend/apps/rag-worker",
 ]
 
 [tool.ruff]

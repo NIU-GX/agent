@@ -5,7 +5,6 @@ description = "Enterprise LLM gateway: routing, rate limit, circuit breaker, fal
 requires-python = ">=3.12"
 dependencies = [
   "agent-shared",
-  "httpx>=0.28",
   "litellm>=1.55",
   "redis>=5.2",
 ]

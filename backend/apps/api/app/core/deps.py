@@ -8,7 +8,8 @@ from typing import Any
 import aio_pika
 
 from agent_core import AgentRuntime
-from agent_core.skills import SkillRegistry
+from agent_core.prompts import BUILTIN_PROMPT_SEEDS, BuiltinPromptProvider
+from agent_core.skills import SkillRegistry, filesystem_skill_seeds
 from agent_core.tools import ToolRegistry
 from llm_gateway import LLMGateway, build_rate_limiter
 from rag.mq import RagPublisher, declare_topology
@@ -17,6 +18,13 @@ from rag.store import InMemoryVectorStore, MinioObjectStore, MilvusVectorStore
 from shared.config import settings
 from shared.db import Database, PostgresStatusStore, PostgresUsageRecorder
 from shared.logging import get_logger
+from shared.mcp_store import McpStore
+from shared.prompt_store import PromptStore
+from shared.skill_store import SkillStore
+from shared.tool_store import ToolStore
+
+from app.core.capability_bridge import CapabilitySync
+from app.core.prompt_bridge import PromptStoreProvider
 
 logger = get_logger(__name__)
 
@@ -32,11 +40,17 @@ class AppState:
     agent: AgentRuntime
     status: PostgresStatusStore
     db: Database
+    prompts: PromptStore
+    tool_store: ToolStore
+    skill_store: SkillStore
+    mcp_store: McpStore
+    capability_sync: CapabilitySync
     rabbit_conn: aio_pika.RobustConnection | None = None
     publisher: RagPublisher | None = None
 
     async def aclose(self) -> None:
         await self.llm.aclose()
+        await self.tools.aclose()
         if self.rabbit_conn:
             await self.rabbit_conn.close()
         await self.db.aclose()
@@ -113,6 +127,17 @@ async def get_app_state() -> AppState:
     db = Database()
     await db.create_tables()
     status = PostgresStatusStore(db)
+    # 提示词管理为独立能力；仅在此装配层与 Agent 端口对接
+    prompts = PromptStore(db)
+    await prompts.ensure_defaults(BUILTIN_PROMPT_SEEDS)
+    prompt_provider = PromptStoreProvider(prompts, fallback=BuiltinPromptProvider())
+
+    tool_store = ToolStore(db)
+    skill_store = SkillStore(db)
+    mcp_store = McpStore(db)
+    await skill_store.ensure_defaults(filesystem_skill_seeds(settings.skills_dir))
+    await mcp_store.ensure_defaults(McpStore.parse_servers_json(settings.mcp_servers_json))
+
     usage = PostgresUsageRecorder(db)
     rate_limiter = await build_rate_limiter()
     llm = LLMGateway(rate_limiter=rate_limiter, usage_recorder=usage)
@@ -135,14 +160,23 @@ async def get_app_state() -> AppState:
         chat=llm,
     )
     hosts = [h.strip() for h in (settings.allowed_http_hosts or "").split(",") if h.strip()]
-    skills = SkillRegistry(settings.skills_dir)
+    skills = SkillRegistry(settings.skills_dir, load_filesystem=False)
     tools = ToolRegistry(
         retriever=_RetrieveAdapter(retrieve),
         allowed_http_hosts=hosts,
         skills=skills,
     )
-    await tools.load_mcp_servers(settings.mcp_servers_json)
-    agent = AgentRuntime(llm=llm, tools=tools, skills=skills)
+    capability_sync = CapabilitySync(
+        tools=tools,
+        skills=skills,
+        tool_store=tool_store,
+        skill_store=skill_store,
+        mcp_store=mcp_store,
+    )
+    await capability_sync.sync_all()
+    agent = AgentRuntime(
+        llm=llm, tools=tools, skills=skills, prompt_provider=prompt_provider
+    )
     await agent.setup_checkpointer()
 
     publisher = None
@@ -166,6 +200,11 @@ async def get_app_state() -> AppState:
         agent=agent,
         status=status,
         db=db,
+        prompts=prompts,
+        tool_store=tool_store,
+        skill_store=skill_store,
+        mcp_store=mcp_store,
+        capability_sync=capability_sync,
         rabbit_conn=rabbit_conn,
         publisher=publisher,
     )

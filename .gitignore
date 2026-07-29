@@ -14,7 +14,7 @@ build/
 *.log
 .DS_Store
 node_modules/
-apps/web/dist/
+frontend/dist/
 .idea/
 .vscode/
 *.sqlite3

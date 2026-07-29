@@ -1,0 +1,81 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-litellm-config
+data:
+  config.yaml: |
+{{ .Files.Get "litellm-config.yaml" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-litellm
+spec:
+  replicas: {{ .Values.replicaCount.litellm | default 1 }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-litellm
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-litellm
+    spec:
+      containers:
+        - name: litellm
+          image: {{ .Values.image.litellm }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--config", "/app/config.yaml", "--port", "4000"]
+          ports:
+            - containerPort: 4000
+          env:
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: LITELLM_MASTER_KEY
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: OPENAI_API_KEY
+                  optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+          volumeMounts:
+            - name: config
+              mountPath: /app/config.yaml
+              subPath: config.yaml
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: 4000
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: 4000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources.litellm | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-litellm-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-litellm
+spec:
+  selector:
+    app: {{ .Release.Name }}-litellm
+  ports:
+    - port: {{ .Values.service.litellmPort | default 4000 }}
+      targetPort: 4000

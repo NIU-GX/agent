@@ -49,15 +49,13 @@ class Settings(BaseSettings):
     milvus_collection: str = "kb_chunks"
     milvus_dim: int = 1536
 
-    # --- LLM OpenAI-compatible / LiteLLM ---
-    llm_base_url: str = "https://api.openai.com/v1"
-    llm_api_key: str = "sk-xxx"
+    # --- LLM：业务只连 LiteLLM Proxy（一把 Proxy sk）---
+    # 厂商真 key 不在此配置，见 deploy/litellm/.env
+    llm_base_url: str = "http://localhost:4000"
+    llm_api_key: str = "sk-litellm-master"
     llm_chat_model: str = "gpt-4o-mini"
     llm_embed_model: str = "text-embedding-3-small"
     llm_fallback_chat_model: str = "gpt-4o-mini"
-    # 为空则走 httpx 直连；设置如 openai/gpt-4o-mini 则走 LiteLLM
-    litellm_model: str = ""
-    litellm_fallback_model: str = ""
 
     gateway_rpm: int = 60
     gateway_tpm: int = 100_000

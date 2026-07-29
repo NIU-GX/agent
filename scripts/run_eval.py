@@ -10,7 +10,10 @@ from eval.runners.rag_eval import run_retrieval_eval
 
 
 async def main() -> None:
-    ds = Path(__file__).resolve().parents[1] / "packages/eval/eval/datasets/rag_qa.jsonl"
+    ds = (
+        Path(__file__).resolve().parents[1]
+        / "backend/packages/eval/eval/datasets/rag_qa.jsonl"
+    )
 
     class Dummy:
         hits = []

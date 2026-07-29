@@ -112,3 +112,94 @@ class UsageRecord(BaseModel):
     total_tokens: int = 0
     cost_usd: float = 0.0
     request_id: str | None = None
+
+
+class PromptVersionCreate(BaseModel):
+    """发布新提示词版本。"""
+
+    content: str = Field(..., min_length=1, description="提示词正文")
+    change_note: str | None = Field(default=None, description="变更说明")
+    created_by: str | None = Field(default=None, description="操作者")
+    activate: bool = Field(default=True, description="是否立即激活为当前版本")
+
+
+class PromptRollbackRequest(BaseModel):
+    """回退到指定历史版本号。"""
+
+    version: int = Field(..., ge=1, description="目标版本号")
+
+
+class WebhookToolCreate(BaseModel):
+    """创建 HTTP Webhook 工具。"""
+
+    name: str = Field(..., min_length=1, max_length=128)
+    description: str = Field(default="")
+    parameters: dict[str, Any] = Field(
+        default_factory=lambda: {"type": "object", "properties": {}},
+        description="OpenAI function parameters JSON Schema",
+    )
+    webhook_url: str = Field(..., min_length=1, max_length=2048)
+    webhook_method: str = Field(default="POST")
+    webhook_headers: dict[str, Any] = Field(default_factory=dict)
+    timeout_sec: float = Field(default=30.0, gt=0, le=300)
+    tier: str = Field(default="optional")
+    enabled: bool = Field(default=True)
+
+
+class WebhookToolUpdate(BaseModel):
+    """更新 Webhook 工具（仅可变字段）。"""
+
+    description: str | None = None
+    parameters: dict[str, Any] | None = None
+    webhook_url: str | None = Field(default=None, max_length=2048)
+    webhook_method: str | None = None
+    webhook_headers: dict[str, Any] | None = None
+    timeout_sec: float | None = Field(default=None, gt=0, le=300)
+    tier: str | None = None
+    enabled: bool | None = None
+
+
+class SkillCreate(BaseModel):
+    """创建 Skill。"""
+
+    name: str = Field(..., min_length=1, max_length=128)
+    description: str = Field(default="")
+    body: str = Field(default="")
+    tools: list[str] = Field(default_factory=list)
+    mcp: list[str] = Field(default_factory=list)
+    enabled: bool = Field(default=True)
+
+
+class SkillUpdate(BaseModel):
+    """更新 Skill。"""
+
+    description: str | None = None
+    body: str | None = None
+    tools: list[str] | None = None
+    mcp: list[str] | None = None
+    enabled: bool | None = None
+
+
+class McpServerCreate(BaseModel):
+    """创建 MCP Server 配置。"""
+
+    name: str = Field(..., min_length=1, max_length=128)
+    command: str = Field(..., min_length=1, max_length=512)
+    args: list[Any] = Field(default_factory=list)
+    env: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = Field(default=True)
+
+
+class McpServerUpdate(BaseModel):
+    """更新 MCP Server 配置。"""
+
+    command: str | None = Field(default=None, max_length=512)
+    args: list[Any] | None = None
+    env: dict[str, Any] | None = None
+    enabled: bool | None = None
+
+
+class EnabledPatch(BaseModel):
+    """通用启用/禁用。"""
+
+    enabled: bool

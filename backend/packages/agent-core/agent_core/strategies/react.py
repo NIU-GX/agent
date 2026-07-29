@@ -10,12 +10,20 @@ from langgraph.graph import END, StateGraph
 from shared.config import settings
 
 from agent_core.nodes import critic_answer
+from agent_core.prompts import BuiltinPromptProvider, PromptProvider
 from agent_core.state import AgentState
 from agent_core.tools.registry import ToolRegistry
 
 
-def build_react_graph(*, llm: Any, tools: ToolRegistry, checkpointer: Any = None):
+def build_react_graph(
+    *,
+    llm: Any,
+    tools: ToolRegistry,
+    checkpointer: Any = None,
+    prompts: PromptProvider | None = None,
+):
     max_iters = settings.agent_max_iterations
+    provider = prompts or BuiltinPromptProvider()
 
     async def reason(state: AgentState) -> dict[str, Any]:
         iterations = int(state.get("iterations") or 0)
@@ -35,10 +43,7 @@ def build_react_graph(*, llm: Any, tools: ToolRegistry, checkpointer: Any = None
         skill_body = "\n\n".join(state.get("skill_instructions") or [])
 
         system = (
-            "你是 ReAct Agent。按需调用工具收集信息，信息足够时直接给出最终中文回答。"
-            "不要编造检索结果。有上下文时必须引用。\n"
-            "渐进式披露：先看 Skills/Tools 目录；需要时用 activate_skill 解锁 optional/MCP 工具，"
-            "再调用具体工具。核心工具 retrieve/calculator 始终可用。\n\n"
+            f"{provider.get('react.system')}\n\n"
             f"## Skills 目录 (L0)\n{skill_catalog}\n\n"
             f"## Tools 目录 (L0)\n{tool_catalog}\n"
         )
@@ -165,6 +170,7 @@ def build_react_graph(*, llm: Any, tools: ToolRegistry, checkpointer: Any = None
             answer=state.get("final_answer") or "",
             context=state.get("context") or "",
             require_citation=bool(state.get("enable_rag")),
+            prompts=provider,
         )
         return {
             "final_answer": result["revised"],

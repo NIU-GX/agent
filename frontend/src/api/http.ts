@@ -39,3 +39,32 @@ export async function apiPostForm<T = unknown>(path: string, form: FormData): Pr
   if (!resp.ok) throw new Error(`${path} failed: ${resp.status} ${await resp.text()}`)
   return resp.json() as Promise<T>
 }
+
+export async function apiPutJson<T = unknown>(path: string, body: unknown): Promise<T> {
+  const resp = await fetch(`${API_BASE}${path}`, {
+    method: 'PUT',
+    headers: authHeaders(true),
+    body: JSON.stringify(body),
+  })
+  if (!resp.ok) throw new Error(`${path} failed: ${resp.status}`)
+  return resp.json() as Promise<T>
+}
+
+export async function apiPatchJson<T = unknown>(path: string, body: unknown): Promise<T> {
+  const resp = await fetch(`${API_BASE}${path}`, {
+    method: 'PATCH',
+    headers: authHeaders(true),
+    body: JSON.stringify(body),
+  })
+  if (!resp.ok) throw new Error(`${path} failed: ${resp.status}`)
+  return resp.json() as Promise<T>
+}
+
+export async function apiDeleteJson<T = unknown>(path: string): Promise<T> {
+  const resp = await fetch(`${API_BASE}${path}`, {
+    method: 'DELETE',
+    headers: authHeaders(false),
+  })
+  if (!resp.ok) throw new Error(`${path} failed: ${resp.status}`)
+  return resp.json() as Promise<T>
+}

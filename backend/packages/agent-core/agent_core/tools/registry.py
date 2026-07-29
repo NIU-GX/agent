@@ -1,4 +1,4 @@
-"""工具注册表：core / optional / MCP / 元工具；按 unlocked 渐进披露。"""
+"""工具注册表：core / optional / MCP / webhook / 元工具；按 unlocked 渐进披露。"""
 
 from __future__ import annotations
 
@@ -39,7 +39,10 @@ class ToolRegistry:
         self.allowed_http_hosts = set(allowed_http_hosts or [])
         self._schemas: dict[str, dict[str, Any]] = {}
         self._handlers: dict[str, ToolHandler] = {}
-        self._tiers: dict[str, str] = {}  # core | optional | meta | mcp
+        self._tiers: dict[str, str] = {}  # core | optional | meta | mcp | webhook
+        self._sources: dict[str, str] = {}  # builtin | meta | webhook | mcp
+        self._enabled: dict[str, bool] = {}
+        self._webhook_meta: dict[str, dict[str, Any]] = {}
         self._register_builtins()
         self._register_meta_tools()
 
@@ -50,11 +53,117 @@ class ToolRegistry:
         handler: ToolHandler,
         *,
         tier: str = "optional",
+        source: str = "builtin",
+        enabled: bool = True,
     ) -> None:
-        """动态注册工具。tier: core | optional | meta | mcp。"""
+        """动态注册工具。tier: core | optional | meta | mcp | webhook。"""
         self._schemas[name] = schema
         self._handlers[name] = handler
         self._tiers[name] = tier
+        self._sources[name] = source
+        self._enabled[name] = enabled
+
+    def unregister(self, name: str) -> bool:
+        """卸载工具（主要用于 webhook / mcp）。"""
+        if name not in self._schemas:
+            return False
+        self._schemas.pop(name, None)
+        self._handlers.pop(name, None)
+        self._tiers.pop(name, None)
+        self._sources.pop(name, None)
+        self._enabled.pop(name, None)
+        self._webhook_meta.pop(name, None)
+        return True
+
+    def set_enabled(self, name: str, enabled: bool) -> bool:
+        if name not in self._schemas:
+            return False
+        self._enabled[name] = bool(enabled)
+        return True
+
+    def apply_enabled_flags(self, flags: dict[str, bool]) -> None:
+        for name, enabled in flags.items():
+            if name in self._schemas:
+                self._enabled[name] = bool(enabled)
+
+    def register_webhook(
+        self,
+        name: str,
+        *,
+        description: str,
+        parameters: dict[str, Any] | None = None,
+        webhook_url: str,
+        webhook_method: str = "POST",
+        webhook_headers: dict[str, Any] | None = None,
+        timeout_sec: float = 30.0,
+        tier: str = "optional",
+        enabled: bool = True,
+    ) -> None:
+        """注册 HTTP Webhook 工具：call 时将 arguments 作为 JSON body POST/PUT。"""
+        params = parameters or {"type": "object", "properties": {}}
+        schema = self._fn_schema(name, description or f"Webhook tool {name}", params)
+        meta = {
+            "url": webhook_url,
+            "method": (webhook_method or "POST").upper(),
+            "headers": dict(webhook_headers or {}),
+            "timeout_sec": float(timeout_sec or 30.0),
+        }
+        self._webhook_meta[name] = meta
+
+        async def _handler(arguments: dict[str, Any], *, _name: str = name) -> dict[str, Any]:
+            return await self._call_webhook(_name, arguments)
+
+        self.register(
+            name,
+            schema,
+            _handler,
+            tier=tier if tier in {"optional", "core", "meta"} else "optional",
+            source="webhook",
+            enabled=enabled,
+        )
+
+    def sync_webhooks(self, records: list[dict[str, Any]]) -> None:
+        """用 Store 记录替换全部 webhook 工具。"""
+        wanted = {str(r["name"]) for r in records if r.get("name")}
+        for name in list(self._webhook_meta.keys()):
+            if name not in wanted:
+                self.unregister(name)
+        for rec in records:
+            name = str(rec.get("name") or "").strip()
+            if not name:
+                continue
+            self.register_webhook(
+                name,
+                description=str(rec.get("description") or ""),
+                parameters=rec.get("parameters") if isinstance(rec.get("parameters"), dict) else None,
+                webhook_url=str(rec.get("webhook_url") or ""),
+                webhook_method=str(rec.get("webhook_method") or "POST"),
+                webhook_headers=rec.get("webhook_headers")
+                if isinstance(rec.get("webhook_headers"), dict)
+                else None,
+                timeout_sec=float(rec.get("timeout_sec") or 30.0),
+                tier=str(rec.get("tier") or "optional"),
+                enabled=bool(rec.get("enabled", True)),
+            )
+
+    def clear_mcp_tools(self) -> None:
+        for name in [n for n, s in self._sources.items() if s == "mcp"]:
+            self.unregister(name)
+
+    def ingest_mcp_schemas(self) -> None:
+        """将当前 McpToolBridge 已发现工具挂入 registry。"""
+        self.clear_mcp_tools()
+        for schema in self.mcp.openai_tools_schema:
+            name = (schema.get("function") or {}).get("name")
+            if not name:
+                continue
+
+            async def _mcp_handler(
+                arguments: dict[str, Any], *, _name: str = name
+            ) -> dict[str, Any]:
+                return await self.mcp.call(_name, arguments)
+
+            self.register(name, schema, _mcp_handler, tier="mcp", source="mcp", enabled=True)
 
     def _fn_schema(
         self, name: str, description: str, parameters: dict[str, Any]
@@ -82,6 +191,7 @@ class ToolRegistry:
             ),
             self._handle_retrieve,
             tier="core",
+            source="builtin",
         )
         self.register(
             "calculator",
@@ -96,6 +206,7 @@ class ToolRegistry:
             ),
             self._handle_calculator,
             tier="core",
+            source="builtin",
         )
         self.register(
             "http_get",
@@ -110,6 +221,7 @@ class ToolRegistry:
             ),
             self._handle_http_get,
             tier="optional",
+            source="builtin",
         )
 
     def _register_meta_tools(self) -> None:
@@ -122,6 +234,7 @@ class ToolRegistry:
             ),
             self._handle_list_skills,
             tier="meta",
+            source="meta",
         )
         self.register(
             "activate_skill",
@@ -138,6 +251,7 @@ class ToolRegistry:
             ),
             self._handle_activate_skill,
             tier="meta",
+            source="meta",
         )
         self.register(
             "list_tools",
@@ -157,27 +271,26 @@ class ToolRegistry:
             ),
             self._handle_list_tools,
             tier="meta",
+            source="meta",
         )
 
     async def load_mcp_servers(self, servers_json: str) -> None:
         await self.mcp.load_from_json(servers_json)
-        for schema in self.mcp.openai_tools_schema:
-            name = schema["function"]["name"]
-            self._schemas[name] = schema
-            self._tiers[name] = "mcp"
+        self.ingest_mcp_schemas()
 
-            async def _mcp_handler(
-                arguments: dict[str, Any], *, _name: str = name
-            ) -> dict[str, Any]:
-                return await self.mcp.call(_name, arguments)
-
-            self._handlers[name] = _mcp_handler
+    async def reload_mcp_configs(self, configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """按配置列表全量重连 MCP，并刷新 registry 中的 mcp 工具。"""
+        results = await self.mcp.reload_servers(configs)
+        self.ingest_mcp_schemas()
+        return results
 
     def catalog(self, *, unlocked: set[str] | None = None) -> list[dict[str, Any]]:
-        """L0：name + description + tier + unlocked。"""
+        """L0：name + description + tier + unlocked（跳过 disabled）。"""
         unlocked = unlocked or set()
         items: list[dict[str, Any]] = []
         for name, schema in self._schemas.items():
+            if not self._enabled.get(name, True):
+                continue
             fn = schema.get("function") or {}
             tier = self._tiers.get(name, "optional")
             always = tier in {"core", "meta"}
@@ -186,16 +299,49 @@ class ToolRegistry:
                     "name": name,
                     "description": fn.get("description") or "",
                     "tier": tier,
+                    "source": self._sources.get(name, "builtin"),
+                    "enabled": True,
+                    "mutable": self._sources.get(name) == "webhook",
                     "unlocked": always or name in unlocked,
                 }
             )
         return items
 
+    def admin_catalog(self) -> list[dict[str, Any]]:
+        """管理台列表：含 disabled；附带 webhook 元数据。"""
+        items: list[dict[str, Any]] = []
+        for name, schema in self._schemas.items():
+            fn = schema.get("function") or {}
+            source = self._sources.get(name, "builtin")
+            item: dict[str, Any] = {
+                "name": name,
+                "description": fn.get("description") or "",
+                "tier": self._tiers.get(name, "optional"),
+                "source": source,
+                "enabled": self._enabled.get(name, True),
+                "mutable": source == "webhook",
+                "parameters": fn.get("parameters") or {},
+            }
+            if source == "webhook" and name in self._webhook_meta:
+                meta = self._webhook_meta[name]
+                item.update(
+                    {
+                        "webhook_url": meta.get("url"),
+                        "webhook_method": meta.get("method"),
+                        "webhook_headers": meta.get("headers") or {},
+                        "timeout_sec": meta.get("timeout_sec"),
+                    }
+                )
+            items.append(item)
+        return items
+
     def openai_tools_schema(self, unlocked: set[str] | None = None) -> list[dict[str, Any]]:
-        """L1：core + meta + unlocked 的完整 schema。"""
+        """L1：core + meta + unlocked 的完整 schema（跳过 disabled）。"""
         unlocked = unlocked or set()
         result: list[dict[str, Any]] = []
         for name, schema in self._schemas.items():
+            if not self._enabled.get(name, True):
+                continue
             tier = self._tiers.get(name, "optional")
             if tier in {"core", "meta"} or name in unlocked:
                 result.append(schema)
@@ -217,15 +363,50 @@ class ToolRegistry:
         *,
         state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if name in self._schemas and not self._enabled.get(name, True):
+            return {"ok": False, "error": f"tool disabled: {name}"}
         handler = self._handlers.get(name)
         if not handler:
             if name.startswith("mcp_"):
                 return await self.mcp.call(name, arguments)
             return {"ok": False, "error": f"unknown tool: {name}"}
-        # 元工具需要 state 上下文
         if name in {"list_tools", "activate_skill", "list_skills"}:
             return await handler({**(arguments or {}), "__state__": state or {}})
         return await handler(arguments or {})
+
+    async def _call_webhook(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        meta = self._webhook_meta.get(name)
+        if not meta:
+            return {"ok": False, "error": f"webhook meta missing: {name}"}
+        url = str(meta.get("url") or "")
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            return {"ok": False, "error": "webhook url must be http(s)"}
+        host = parsed.hostname or ""
+        if self.allowed_http_hosts and host not in self.allowed_http_hosts:
+            return {"ok": False, "error": f"host not allowed: {host}"}
+        method = str(meta.get("method") or "POST").upper()
+        headers = dict(meta.get("headers") or {})
+        headers.setdefault("Content-Type", "application/json")
+        timeout = float(meta.get("timeout_sec") or 30.0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.request(method, url, json=arguments or {}, headers=headers)
+                text = resp.text[:8000]
+                try:
+                    body: Any = resp.json()
+                except Exception:  # noqa: BLE001
+                    body = text
+                if resp.is_error:
+                    return {
+                        "ok": False,
+                        "error": f"webhook status {resp.status_code}",
+                        "status": resp.status_code,
+                        "body": body,
+                    }
+                return {"ok": True, "status": resp.status_code, "body": body}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
 
     async def _handle_retrieve(self, arguments: dict[str, Any]) -> dict[str, Any]:
         if not self.retriever:

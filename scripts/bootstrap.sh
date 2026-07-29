@@ -22,6 +22,7 @@ fi
 "$PY" -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install -e packages/shared -e packages/llm-gateway -e packages/rag \
-  -e packages/agent-core -e packages/eval -e apps/api -e apps/rag-worker
+pip install -e backend/packages/shared -e backend/packages/llm-gateway -e backend/packages/rag \
+  -e backend/packages/agent-core -e backend/packages/eval \
+  -e backend/apps/api -e backend/apps/rag-worker
 echo "bootstrap done. activate: source .venv/bin/activate"

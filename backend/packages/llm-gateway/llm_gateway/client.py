@@ -1,4 +1,8 @@
-"""网关核心客户端：chat / embeddings，带限流、熔断、fallback、LiteLLM 与用量钩子。"""
+"""网关核心客户端：经 LiteLLM Proxy 统一 chat / embeddings。
+
+业务侧只持有一把 Proxy sk（LLM_API_KEY）+ Proxy 地址（LLM_BASE_URL）；
+各厂商真实密钥由 Proxy 侧配置，不进入应用。
+"""
 
 from __future__ import annotations
 
@@ -6,8 +10,6 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
-
-import httpx
 
 from shared.config import settings
 from shared.logging import get_logger
@@ -20,12 +22,24 @@ from llm_gateway.usage import UsageRecorder
 logger = get_logger(__name__)
 
 
-class LLMGateway:
-    """面向业务的 LLM 统一入口。
+def normalize_proxy_base(url: str) -> str:
+    """LiteLLM Proxy api_base 不含 /v1 后缀。"""
+    base = (url or "").rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3].rstrip("/")
+    return base
 
-    - 默认：httpx 直连 OpenAI-compatible
-    - 设置 litellm_model：走 LiteLLM 做多厂商适配
-    """
+
+def to_proxy_model(model: str) -> str:
+    """规范化业务模型名（去掉误带的 litellm_proxy/ 前缀）。"""
+    name = (model or "").strip()
+    if not name:
+        raise ValueError("model name is required")
+    return name.removeprefix("litellm_proxy/")
+
+
+class LLMGateway:
+    """面向业务的 LLM 统一入口：一律经 LiteLLM Proxy（一把 sk）。"""
 
     def __init__(
         self,
@@ -36,7 +50,7 @@ class LLMGateway:
         usage_recorder: UsageRecorder | None = None,
         circuit: CircuitBreaker | None = None,
     ) -> None:
-        self.base_url = (base_url or settings.llm_base_url).rstrip("/")
+        self.base_url = normalize_proxy_base(base_url or settings.llm_base_url)
         self.api_key = api_key or settings.llm_api_key
         self.rate_limiter = rate_limiter or TokenBucketRateLimiter(
             rpm=settings.gateway_rpm,
@@ -47,15 +61,8 @@ class LLMGateway:
             fail_threshold=settings.gateway_circuit_fail_threshold,
             reset_seconds=settings.gateway_circuit_reset_seconds,
         )
-        self.use_litellm = bool(settings.litellm_model)
-        self._client = httpx.AsyncClient(
-            base_url=self.base_url,
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            timeout=httpx.Timeout(120.0, connect=10.0),
-        )
 
     async def aclose(self) -> None:
-        await self._client.aclose()
         close = getattr(self.rate_limiter, "aclose", None)
         if close:
             await close()
@@ -71,7 +78,7 @@ class LLMGateway:
     ) -> dict[str, Any]:
         if not self.circuit.allow():
             raise RuntimeError("llm circuit open: upstream temporarily unavailable")
-        primary = model or (settings.litellm_model if self.use_litellm else settings.llm_chat_model)
+        primary = model or settings.llm_chat_model
         await self.rate_limiter.acquire(tokens=1)
         try:
             body = await self._chat_once(
@@ -84,7 +91,7 @@ class LLMGateway:
             return body
         except Exception as exc:  # noqa: BLE001
             self.circuit.record_failure()
-            fallback = settings.litellm_fallback_model or settings.llm_fallback_chat_model
+            fallback = settings.llm_fallback_chat_model
             if fallback == primary:
                 raise
             logger.warning("chat primary failed (%s), fallback to %s", exc, fallback)
@@ -107,37 +114,14 @@ class LLMGateway:
     ) -> AsyncIterator[str]:
         if not self.circuit.allow():
             raise RuntimeError("llm circuit open: upstream temporarily unavailable")
-        model_name = model or (settings.litellm_model if self.use_litellm else settings.llm_chat_model)
+        model_name = model or settings.llm_chat_model
         await self.rate_limiter.acquire(tokens=1)
         request_id = str(uuid.uuid4())
-        if self.use_litellm:
-            async for chunk in self._litellm_stream(messages, model=model_name, temperature=temperature):
-                yield chunk
-            await self.usage_recorder.record(UsageRecord(model=model_name, request_id=request_id))
-            return
-
-        payload: dict[str, Any] = {
-            "model": model_name,
-            "messages": messages,
-            "temperature": temperature,
-            "stream": True,
-        }
         try:
-            async with self._client.stream("POST", "/chat/completions", json=payload) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data = line[6:].strip()
-                    if data == "[DONE]":
-                        break
-                    import json
-
-                    chunk = json.loads(data)
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    content = delta.get("content")
-                    if content:
-                        yield content
+            async for chunk in self._litellm_stream(
+                messages, model=model_name, temperature=temperature
+            ):
+                yield chunk
             self.circuit.record_success()
         except Exception:
             self.circuit.record_failure()
@@ -151,26 +135,13 @@ class LLMGateway:
             raise RuntimeError("llm circuit open: upstream temporarily unavailable")
         model_name = model or settings.llm_embed_model
         await self.rate_limiter.acquire(tokens=len(texts))
-        if self.use_litellm:
-            return await self._litellm_embed(texts, model=model_name)
-        resp = await self._client.post(
-            "/embeddings",
-            json={"model": model_name, "input": texts},
-        )
-        resp.raise_for_status()
-        body = resp.json()
-        items = sorted(body["data"], key=lambda x: x["index"])
-        usage = body.get("usage", {})
-        await self.usage_recorder.record(
-            UsageRecord(
-                model=model_name,
-                prompt_tokens=usage.get("prompt_tokens", 0),
-                total_tokens=usage.get("total_tokens", 0),
-                request_id=str(uuid.uuid4()),
-            )
-        )
-        self.circuit.record_success()
-        return [item["embedding"] for item in items]
+        try:
+            vectors = await self._litellm_embed(texts, model=model_name)
+            self.circuit.record_success()
+            return vectors
+        except Exception:
+            self.circuit.record_failure()
+            raise
 
     async def _chat_once(
         self,
@@ -180,35 +151,18 @@ class LLMGateway:
         temperature: float,
         tools: list[dict[str, Any]] | None,
     ) -> dict[str, Any]:
-        if self.use_litellm:
-            return await self._litellm_chat(
-                messages, model=model, temperature=temperature, tools=tools
-            )
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-
-        started = time.perf_counter()
-        resp = await self._client.post("/chat/completions", json=payload)
-        resp.raise_for_status()
-        body = resp.json()
-        usage = body.get("usage", {})
-        await self.usage_recorder.record(
-            UsageRecord(
-                model=model,
-                prompt_tokens=usage.get("prompt_tokens", 0),
-                completion_tokens=usage.get("completion_tokens", 0),
-                total_tokens=usage.get("total_tokens", 0),
-                request_id=str(uuid.uuid4()),
-            )
+        return await self._litellm_chat(
+            messages, model=model, temperature=temperature, tools=tools
         )
-        logger.debug("chat ok model=%s latency_ms=%.1f", model, (time.perf_counter() - started) * 1000)
-        return body
+
+    def _litellm_common_kwargs(self, *, model: str) -> dict[str, Any]:
+        # custom_llm_provider=litellm_proxy：强制走 Proxy，避免 SDK 按厂商拆 key
+        return {
+            "model": to_proxy_model(model),
+            "api_key": self.api_key,
+            "api_base": self.base_url,
+            "custom_llm_provider": "litellm_proxy",
+        }
 
     async def _litellm_chat(
         self,
@@ -221,15 +175,14 @@ class LLMGateway:
         import litellm
 
         kwargs: dict[str, Any] = {
-            "model": model,
+            **self._litellm_common_kwargs(model=model),
             "messages": messages,
             "temperature": temperature,
-            "api_key": self.api_key,
-            "api_base": self.base_url if self.base_url else None,
         }
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+        started = time.perf_counter()
         resp = await litellm.acompletion(**kwargs)
         body = resp.model_dump() if hasattr(resp, "model_dump") else dict(resp)
         usage = body.get("usage") or {}
@@ -244,6 +197,7 @@ class LLMGateway:
                 request_id=str(uuid.uuid4()),
             )
         )
+        logger.debug("chat ok model=%s latency_ms=%.1f", model, (time.perf_counter() - started) * 1000)
         return body
 
     async def _litellm_stream(
@@ -256,12 +210,10 @@ class LLMGateway:
         import litellm
 
         stream = await litellm.acompletion(
-            model=model,
+            **self._litellm_common_kwargs(model=model),
             messages=messages,
             temperature=temperature,
             stream=True,
-            api_key=self.api_key,
-            api_base=self.base_url if self.base_url else None,
         )
         async for chunk in stream:
             try:
@@ -275,11 +227,16 @@ class LLMGateway:
     async def _litellm_embed(self, texts: list[str], *, model: str) -> list[list[float]]:
         import litellm
 
-        resp = await litellm.aembedding(model=model, input=texts, api_key=self.api_key)
+        resp = await litellm.aembedding(
+            **self._litellm_common_kwargs(model=model),
+            input=texts,
+        )
         body = resp.model_dump() if hasattr(resp, "model_dump") else dict(resp)
         data = body.get("data") or []
         items = sorted(data, key=lambda x: x.get("index", 0))
         usage = body.get("usage") or {}
+        if hasattr(usage, "model_dump"):
+            usage = usage.model_dump()
         await self.usage_recorder.record(
             UsageRecord(
                 model=model,

@@ -11,6 +11,7 @@ from shared.logging import get_logger
 from shared.schemas import AgentStrategy, ChatEvent
 
 from agent_core.nodes import llm_route_strategy
+from agent_core.prompts import BuiltinPromptProvider, PromptProvider
 from agent_core.skills.registry import SkillRegistry
 from agent_core.state import AgentState
 from agent_core.strategies import build_cot_graph, build_plan_execute_graph, build_react_graph
@@ -26,10 +27,13 @@ class AgentRuntime:
         llm: Any,
         tools: ToolRegistry,
         skills: SkillRegistry | None = None,
+        prompt_provider: PromptProvider | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
         self.skills = skills or getattr(tools, "skills", None)
+        # 默认内置 Provider：无提示词管理模块时 Agent 仍可独立运行
+        self.prompts: PromptProvider = prompt_provider or BuiltinPromptProvider()
         self._checkpointer: Any = None
         self._pg_pool: Any = None
         self._graphs: dict[AgentStrategy, Any] = {}
@@ -64,13 +68,22 @@ class AgentRuntime:
     def _rebuild_graphs(self, *, checkpointer: Any) -> None:
         self._graphs = {
             AgentStrategy.COT: build_cot_graph(
-                llm=self.llm, tools=self.tools, checkpointer=checkpointer
+                llm=self.llm,
+                tools=self.tools,
+                checkpointer=checkpointer,
+                prompts=self.prompts,
             ),
             AgentStrategy.REACT: build_react_graph(
-                llm=self.llm, tools=self.tools, checkpointer=checkpointer
+                llm=self.llm,
+                tools=self.tools,
+                checkpointer=checkpointer,
+                prompts=self.prompts,
             ),
             AgentStrategy.PLAN_EXECUTE: build_plan_execute_graph(
-                llm=self.llm, tools=self.tools, checkpointer=checkpointer
+                llm=self.llm,
+                tools=self.tools,
+                checkpointer=checkpointer,
+                prompts=self.prompts,
             ),
         }
 
@@ -84,7 +97,7 @@ class AgentRuntime:
     async def resolve_strategy(self, strategy: AgentStrategy, message: str) -> AgentStrategy:
         if strategy != AgentStrategy.AUTO:
             return strategy
-        return await llm_route_strategy(self.llm, message)
+        return await llm_route_strategy(self.llm, message, prompts=self.prompts)
 
     def _preactivate_skills(self, skill_names: list[str]) -> dict[str, Any]:
         """会话级预激活 Skills → active_skills / unlocked_tools / skill_instructions。"""
