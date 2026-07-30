@@ -16,6 +16,7 @@ from agent_core.skills.registry import SkillRegistry
 from agent_core.state import AgentState
 from agent_core.strategies import build_cot_graph, build_plan_execute_graph, build_react_graph
 from agent_core.tools.registry import ToolRegistry
+from agent_core.tracing import refresh_trace_ids, start_trace
 
 logger = get_logger(__name__)
 
@@ -145,12 +146,25 @@ class AgentRuntime:
 
         chosen = await self.resolve_strategy(strategy, message)
         thread_id = session_id or str(uuid.uuid4())
+        skill_names = list(skills or [])
+        trace = start_trace(
+            session_id=thread_id,
+            strategy=chosen.value,
+            skills=skill_names,
+            enable_rag=enable_rag,
+            name="agent.run",
+        )
         yield ChatEvent(
             type="strategy",
-            data={"strategy": chosen.value, "session_id": thread_id},
+            data={
+                "strategy": chosen.value,
+                "session_id": thread_id,
+                "trace_id": trace.trace_id,
+                "langfuse_url": trace.langfuse_url,
+            },
         )
 
-        pre = self._preactivate_skills(list(skills or []))
+        pre = self._preactivate_skills(skill_names)
         for ev in pre.get("skill_events") or []:
             if ev.get("phase") == "activated":
                 yield ChatEvent(type="skill_start", data={"name": ev.get("name")})
@@ -170,7 +184,17 @@ class AgentRuntime:
                 )
 
         graph = self._graphs[chosen]
-        config = {"configurable": {"thread_id": thread_id}}
+        config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
+        cbs = trace.callbacks()
+        if cbs:
+            config["callbacks"] = cbs
+            config["metadata"] = {
+                "langfuse_session_id": thread_id,
+                "strategy": chosen.value,
+                "skills": skill_names,
+                "enable_rag": enable_rag,
+            }
+            config["run_name"] = "agent.run"
         initial: AgentState = {
             "message": message,
             "strategy": chosen.value,
@@ -211,11 +235,15 @@ class AgentRuntime:
             async for update in graph.astream(stream_input, config=config, stream_mode="updates"):
                 if isinstance(update, dict) and "__interrupt__" in update:
                     payload = update["__interrupt__"]
+                    trace = refresh_trace_ids(trace)
+                    trace.flush()
                     yield ChatEvent(
                         type="hitl",
                         data={
                             "session_id": thread_id,
                             "payload": _serialize_interrupt(payload),
+                            "trace_id": trace.trace_id,
+                            "langfuse_url": trace.langfuse_url,
                         },
                     )
                     return
@@ -235,6 +263,8 @@ class AgentRuntime:
                                 "session_id": thread_id,
                                 "kind": "plan_approval",
                                 "plan_steps": delta.get("plan_steps") or final_plan,
+                                "trace_id": trace.trace_id,
+                                "langfuse_url": trace.langfuse_url,
                             },
                         )
                     for sev in delta.get("skill_events") or []:
@@ -280,19 +310,37 @@ class AgentRuntime:
                         yield ChatEvent(type="error", data={"message": delta["error"]})
         except Exception as exc:  # noqa: BLE001
             if "Interrupt" in type(exc).__name__ or "interrupt" in str(exc).lower():
+                trace = refresh_trace_ids(trace)
+                trace.flush()
                 yield ChatEvent(
                     type="hitl",
-                    data={"session_id": thread_id, "payload": str(exc)},
+                    data={
+                        "session_id": thread_id,
+                        "payload": str(exc),
+                        "trace_id": trace.trace_id,
+                        "langfuse_url": trace.langfuse_url,
+                    },
                 )
                 return
             logger.exception("agent run failed")
-            yield ChatEvent(type="error", data={"message": str(exc)})
+            trace = refresh_trace_ids(trace)
+            trace.flush()
+            yield ChatEvent(
+                type="error",
+                data={
+                    "message": str(exc),
+                    "trace_id": trace.trace_id,
+                    "langfuse_url": trace.langfuse_url,
+                },
+            )
             return
 
         if final_answer and not streamed_answer:
             async for tok in self._stream_answer_tokens(final_answer):
                 yield ChatEvent(type="token", data={"text": tok})
 
+        trace = refresh_trace_ids(trace)
+        trace.flush()
         yield ChatEvent(
             type="final",
             data={
@@ -301,6 +349,8 @@ class AgentRuntime:
                 "strategy": chosen.value,
                 "plan_steps": final_plan,
                 "session_id": thread_id,
+                "trace_id": trace.trace_id,
+                "langfuse_url": trace.langfuse_url,
             },
         )
 

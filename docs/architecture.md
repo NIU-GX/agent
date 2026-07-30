@@ -126,9 +126,18 @@ API 上传 → MinIO → 发布 `rag.parse`；Worker：parse → chunk → embed
 业务 `LLMGateway` 经 LiteLLM SDK 调用 **LiteLLM Proxy**（一把 `LLM_API_KEY` / `LITELLM_MASTER_KEY`）；
 厂商真密钥只配在 Proxy（`deploy/litellm/config.yaml` + 环境变量）。
 网关层另做 Redis 限流、熔断、fallback、用量落库。
-Eval：Retrieval → Generation → Trajectory（含工具/技能轨迹）。
+Eval：Retrieval → Generation（**DeepEval** Faithfulness / AnswerRelevancy）→ Trajectory
+（工具/技能轨迹；可选 DeepEval ToolCorrectness）。评判 LLM 经业务 `LLMGateway` → LiteLLM Proxy。
+CLI：`scripts/run_eval.py --mode mock|live`；CI 仅跑 mock + 阈值门禁（不调 DeepEval LLM）。
 
-## 8. 部署
+## 8. Observability（Langfuse）
+
+本地自托管 Langfuse v3（`deploy/langfuse/`，与主 Compose 隔离）。
+`LANGFUSE_ENABLED=true` 时，`AgentRuntime.run_stream` 经 Langfuse CallbackHandler 上报
+LangGraph LLM / tool span；SSE `strategy`/`final` 携带 `trace_id` 与 `langfuse_url`。
+可视化以 Langfuse UI 为准；管理台提供外链。生产可另用 Helm 部署 Langfuse，本仓库不捆绑。
+
+## 9. 部署
 
 Compose 拉起全栈（含 `litellm` 服务，`:4000`）；Helm 提供 api/worker/web/litellm、探针、HPA（worker）。
-生产关闭内存兜底，强制 API Key。
+生产关闭内存兜底，强制 API Key。`make langfuse-up` 可选拉起追踪栈。

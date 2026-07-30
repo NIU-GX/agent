@@ -53,6 +53,43 @@ docker compose -f deploy/docker-compose.yml up -d --build
 - LiteLLM Proxy: http://localhost:4000
 - RabbitMQ Management: http://localhost:15672 （guest/guest）
 
+## Langfuse 全链路追踪（可选）
+
+独立 Compose 栈（不占用主栈 PG/Redis 端口）：
+
+```bash
+make langfuse-up
+# UI: http://localhost:3000
+# 预置账号: admin@localhost / langfuse-admin
+# 预置 key: pk-lf-local-dev / sk-lf-local-dev
+```
+
+根 `.env` 打开上报：
+
+```bash
+LANGFUSE_ENABLED=true
+LANGFUSE_HOST=http://localhost:3000
+LANGFUSE_PUBLIC_URL=http://localhost:3000
+LANGFUSE_PUBLIC_KEY=pk-lf-local-dev
+LANGFUSE_SECRET_KEY=sk-lf-local-dev
+```
+
+前端 `VITE_LANGFUSE_URL`（默认 `http://localhost:3000`）用于导航「追踪」外链；对话 SSE 会带 `langfuse_url` 深链。
+
+## 评测与 CI
+
+生成质量使用 **DeepEval**（`FaithfulnessMetric` / `AnswerRelevancyMetric`），经 LiteLLM Proxy 作评判模型；
+Trajectory 可选 `ToolCorrectnessMetric`。CI / `make eval` 仍走 **mock**（不调真实 LLM）。
+
+```bash
+make eval    # mock harness + 阈值门禁（无外网）
+make test    # pytest
+make smoke   # 导入冒烟
+# 真实 DeepEval：启动 API 后 POST /api/v1/eval/runs {"kind":"generation"}
+```
+
+GitHub Actions：`smoke` → `pytest` → `scripts/run_eval.py --mode mock`。
+
 ## 环境要求
 
 - Python **3.12+**（与 Docker 镜像 / Ruff `py312` 一致；3.9 已 EOL，不再支持）

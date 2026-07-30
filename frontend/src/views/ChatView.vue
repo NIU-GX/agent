@@ -31,9 +31,21 @@
           <ul v-show="showActivity" class="activity-list">
             <li v-for="(item, idx) in activity" :key="idx" :class="item.kind">
               <span class="tag">{{ labelOf(item.kind) }}</span>
-              <span class="detail">{{ item.summary }}</span>
+              <a
+                v-if="item.href"
+                class="detail link"
+                :href="item.href"
+                target="_blank"
+                rel="noopener noreferrer"
+              >{{ item.summary }}</a>
+              <span v-else class="detail">{{ item.summary }}</span>
             </li>
           </ul>
+          <p v-if="langfuseUrl" class="trace-link-wrap">
+            <a class="trace-link" :href="langfuseUrl" target="_blank" rel="noopener noreferrer">
+              在 Langfuse 查看追踪
+            </a>
+          </p>
         </div>
 
         <div v-if="pendingHitl" class="hitl">
@@ -165,7 +177,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { fetchSkills, type SkillCatalogItem } from '../api/capabilities'
 import { resumeChat, streamChat, type ChatEvent } from '../api/chat'
 
-type ActivityItem = { kind: string; summary: string }
+type ActivityItem = { kind: string; summary: string; href?: string }
 
 const strategy = ref('auto')
 const enableRag = ref(true)
@@ -173,6 +185,7 @@ const message = ref('')
 const loading = ref(false)
 const answer = ref('')
 const sessionId = ref<string | null>(null)
+const langfuseUrl = ref<string | null>(null)
 const lastQuestion = ref('')
 const pendingHitl = ref<Record<string, unknown> | null>(null)
 const activity = ref<ActivityItem[]>([])
@@ -239,6 +252,8 @@ const labels: Record<string, string> = {
   tool_end: '完成',
   skill_start: '技能',
   skill_end: '技能',
+  citation: '引用',
+  trace: '追踪',
   error: '错误',
 }
 
@@ -266,8 +281,20 @@ function summarize(kind: string, data: Record<string, unknown> | string): string
     const ok = data.ok === false ? '失败' : data.ok === true ? '成功' : ''
     return [name, ok].filter(Boolean).join(' · ') || JSON.stringify(data)
   }
+  if (kind === 'citation') {
+    const citations = data.citations
+    const n = Array.isArray(citations) ? citations.length : 0
+    return n ? `${n} 条引用` : '引用'
+  }
   if (kind === 'error') return String(data.message || data)
   return JSON.stringify(data)
+}
+
+function rememberTrace(data: Record<string, unknown>) {
+  const url = data.langfuse_url
+  if (typeof url === 'string' && url) {
+    langfuseUrl.value = url
+  }
 }
 
 function useSuggestion(text: string) {
@@ -402,7 +429,15 @@ watch([activity, answer, pendingHitl], () => {
 function handleEvent(ev: ChatEvent) {
   if (ev.type === 'strategy') {
     sessionId.value = String(ev.data.session_id || sessionId.value || '')
+    rememberTrace(ev.data)
     activity.value.push({ kind: 'strategy', summary: summarize('strategy', ev.data) })
+    if (langfuseUrl.value) {
+      activity.value.push({
+        kind: 'trace',
+        summary: '打开 Langfuse Trace',
+        href: langfuseUrl.value,
+      })
+    }
   } else if (ev.type === 'thought') {
     activity.value.push({ kind: 'thought', summary: summarize('thought', ev.data) })
   } else if (ev.type === 'plan') {
@@ -410,6 +445,7 @@ function handleEvent(ev: ChatEvent) {
   } else if (ev.type === 'hitl') {
     pendingHitl.value = ev.data
     sessionId.value = String(ev.data.session_id || sessionId.value || '')
+    rememberTrace(ev.data)
     activity.value.push({ kind: 'hitl', summary: '等待人工确认' })
   } else if (
     ev.type === 'tool_start' ||
@@ -418,13 +454,17 @@ function handleEvent(ev: ChatEvent) {
     ev.type === 'skill_end'
   ) {
     activity.value.push({ kind: ev.type, summary: summarize(ev.type, ev.data) })
+  } else if (ev.type === 'citation') {
+    activity.value.push({ kind: 'citation', summary: summarize('citation', ev.data) })
   } else if (ev.type === 'token') {
     answer.value += String(ev.data.text || '')
   } else if (ev.type === 'final') {
     pendingHitl.value = null
     answer.value = String(ev.data.answer || answer.value)
     if (ev.data.session_id) sessionId.value = String(ev.data.session_id)
+    rememberTrace(ev.data)
   } else if (ev.type === 'error') {
+    rememberTrace(ev.data)
     activity.value.push({ kind: 'error', summary: summarize('error', ev.data) })
     showActivity.value = true
   }
@@ -439,6 +479,7 @@ async function send() {
   loading.value = true
   answer.value = ''
   activity.value = []
+  langfuseUrl.value = null
   pendingHitl.value = null
   showActivity.value = false
   slashOpen.value = false
@@ -748,6 +789,18 @@ onBeforeUnmount(() => {
 .detail {
   min-width: 0;
   word-break: break-word;
+}
+
+.detail.link,
+.trace-link {
+  color: var(--accent, #2f6f5e);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.trace-link-wrap {
+  margin: 8px 0 0;
+  font-size: 0.8rem;
 }
 
 .hitl {

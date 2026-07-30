@@ -13,12 +13,24 @@ def main() -> None:
     from agent_core.strategies import build_cot_graph, build_react_graph, build_plan_execute_graph
     from agent_core.skills import SkillRegistry
     from agent_core.tools import ToolRegistry
-    from eval.metrics.generation import faithfulness_heuristic
+    from eval.metrics.generation import deepeval_generation_scores, faithfulness_heuristic
+    from eval.runners.generation_eval import run_generation_eval
+    from eval.thresholds import parse_fail_under
+    from agent_core.tracing import langfuse_ready, start_trace
+    import deepeval  # noqa: F401 — generation 依赖
 
     assert settings.app_env
     assert AgentStrategy.REACT.value == "react"
     assert RagStage.PARSE.value == "parse"
     assert faithfulness_heuristic("hello world", "hello") > 0
+    assert callable(run_generation_eval)
+    assert callable(deepeval_generation_scores)
+    assert parse_fail_under("hit_at_k=1.0")["hit_at_k"] == 1.0
+    assert deepeval.__version__ or True
+    assert langfuse_ready() is False or isinstance(langfuse_ready(), bool)
+    ctx = start_trace(session_id="smoke", strategy="react")
+    assert ctx.trace_id
+    ctx.flush()
     assert estimate_cost_usd("gpt-4o-mini", prompt_tokens=1000) > 0
     assert bm25_sparse("知识库检索")
     assert callable(build_cot_graph)

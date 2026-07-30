@@ -9,16 +9,27 @@
         </div>
       </div>
       <nav class="nav">
-        <router-link
-          v-for="item in nav"
-          :key="item.to"
-          :to="item.to"
-          class="nav-link"
-          :class="{ 'is-active': isActive(item.to) }"
-        >
-          <span class="nav-label">{{ item.label }}</span>
-          <span class="nav-hint">{{ item.hint }}</span>
-        </router-link>
+        <template v-for="item in nav" :key="item.to || item.href">
+          <a
+            v-if="item.href"
+            class="nav-link"
+            :href="item.href"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <span class="nav-label">{{ item.label }}</span>
+            <span class="nav-hint">{{ item.hint }}</span>
+          </a>
+          <router-link
+            v-else
+            :to="item.to!"
+            class="nav-link"
+            :class="{ 'is-active': isActive(item.to!) }"
+          >
+            <span class="nav-label">{{ item.label }}</span>
+            <span class="nav-hint">{{ item.hint }}</span>
+          </router-link>
+        </template>
       </nav>
       <div class="rail-foot">
         <span class="dot" />
@@ -40,13 +51,16 @@ import { useRoute } from 'vue-router'
 
 const route = useRoute()
 
-const nav = [
+const langfuseUrl = (import.meta.env.VITE_LANGFUSE_URL as string | undefined) || 'http://localhost:3000'
+
+const nav: Array<{ to?: string; href?: string; label: string; hint: string }> = [
   { to: '/', label: '对话', hint: 'Chat' },
   { to: '/capabilities', label: '能力', hint: 'CRUD' },
   { to: '/prompts', label: '提示词', hint: 'Prompts' },
   { to: '/docs', label: '知识库', hint: 'Docs' },
   { to: '/eval', label: '评测', hint: 'Eval' },
   { to: '/usage', label: '用量', hint: 'Usage' },
+  { href: langfuseUrl, label: '追踪', hint: 'Langfuse' },
 ]
 
 function isActive(to: string) {

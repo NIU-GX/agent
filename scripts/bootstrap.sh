@@ -25,4 +25,5 @@ pip install -U pip
 pip install -e backend/packages/shared -e backend/packages/llm-gateway -e backend/packages/rag \
   -e backend/packages/agent-core -e backend/packages/eval \
   -e backend/apps/api -e backend/apps/rag-worker
+pip install -e ".[dev]"
 echo "bootstrap done. activate: source .venv/bin/activate"

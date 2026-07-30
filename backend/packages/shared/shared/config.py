@@ -104,6 +104,16 @@ class Settings(BaseSettings):
         description="http_get 允许的主机，逗号分隔；空表示不限制（仅开发）",
     )
 
+    # --- Langfuse：全链路追踪（可选；默认关闭）---
+    langfuse_enabled: bool = Field(default=False, description="是否上报 Langfuse")
+    langfuse_host: str = Field(default="http://localhost:3000", description="Langfuse API Host")
+    langfuse_public_url: str = Field(
+        default="http://localhost:3000",
+        description="前端深链用的 Langfuse UI 根地址",
+    )
+    langfuse_public_key: str = Field(default="", description="Langfuse public key")
+    langfuse_secret_key: str = Field(default="", description="Langfuse secret key")
+
     @property
     def postgres_dsn(self) -> str:
         """异步 SQLAlchemy / asyncpg 连接串。"""

@@ -11,6 +11,7 @@ htmlcov/
 dist/
 build/
 .env
+deploy/langfuse/.env
 *.log
 .DS_Store
 node_modules/
