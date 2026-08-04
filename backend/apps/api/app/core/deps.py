@@ -22,6 +22,7 @@ from shared.logging import get_logger
 from shared.rag_store import ProductionRagStore
 from shared.mcp_store import McpStore
 from shared.prompt_store import PromptStore
+from shared.run_store import AgentRunStore
 from shared.skill_store import SkillStore
 from shared.tool_store import ToolStore
 
@@ -46,6 +47,7 @@ class AppState:
     tool_store: ToolStore
     skill_store: SkillStore
     mcp_store: McpStore
+    run_store: AgentRunStore
     capability_sync: CapabilitySync
     rag_store: ProductionRagStore
     rabbit_conn: aio_pika.RobustConnection | None = None
@@ -149,6 +151,7 @@ async def get_app_state() -> AppState:
     tool_store = ToolStore(db)
     skill_store = SkillStore(db)
     mcp_store = McpStore(db)
+    run_store = AgentRunStore(db)
     await skill_store.ensure_defaults(filesystem_skill_seeds(settings.skills_dir))
     await mcp_store.ensure_defaults(McpStore.parse_servers_json(settings.mcp_servers_json))
 
@@ -236,6 +239,7 @@ async def get_app_state() -> AppState:
         tool_store=tool_store,
         skill_store=skill_store,
         mcp_store=mcp_store,
+        run_store=run_store,
         capability_sync=capability_sync,
         rag_store=rag_store,
         rabbit_conn=rabbit_conn,

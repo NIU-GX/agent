@@ -103,6 +103,20 @@ class Settings(BaseSettings):
         default="",
         description="http_get 允许的主机，逗号分隔；空表示不限制（仅开发）",
     )
+    web_search_provider: str = Field(
+        default="tavily",
+        description="联网检索提供方：tavily",
+    )
+    web_search_api_key: str = Field(
+        default="",
+        description="联网检索 API Key（Tavily）",
+    )
+    web_search_max_results: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="联网检索默认返回条数",
+    )
 
     # --- Langfuse：全链路追踪（可选；默认关闭）---
     langfuse_enabled: bool = Field(default=False, description="是否上报 Langfuse")

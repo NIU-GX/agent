@@ -1,4 +1,4 @@
-"""公共节点：Critic / Responder / Strategy Router。"""
+"""公共节点：Critic / Responder / Strategy Router / Intent Router。"""
 
 from __future__ import annotations
 
@@ -9,9 +9,23 @@ from shared.config import settings
 from shared.logging import get_logger
 from shared.schemas import AgentStrategy
 
+from agent_core.nodes.intent import (
+    RoutingPlan,
+    classify_routing,
+    heuristic_routing,
+)
 from agent_core.prompts import BuiltinPromptProvider, PromptProvider
 
 logger = get_logger(__name__)
+
+__all__ = [
+    "RoutingPlan",
+    "classify_routing",
+    "heuristic_routing",
+    "llm_route_strategy",
+    "heuristic_route",
+    "critic_answer",
+]
 
 
 async def llm_route_strategy(
@@ -34,7 +48,7 @@ async def llm_route_strategy(
             temperature=0.0,
         )
         text = (body["choices"][0]["message"]["content"] or "").strip().lower()
-        for cand in ("plan_execute", "react", "cot"):
+        for cand in ("multi_agent", "plan_execute", "react", "cot"):
             if cand in text:
                 return AgentStrategy(cand)
     except Exception as exc:  # noqa: BLE001
@@ -44,6 +58,8 @@ async def llm_route_strategy(
 
 def heuristic_route(message: str) -> AgentStrategy:
     if any(k in message for k in ("对比", "多步", "计划", "分析一下再", "调研", "分别")):
+        if any(k in message for k in ("网上", "最新", "知识库", "政策")):
+            return AgentStrategy.MULTI_AGENT
         return AgentStrategy.PLAN_EXECUTE
     if any(k in message for k in ("为什么", "解释", "原理", "怎么理解")):
         return AgentStrategy.COT

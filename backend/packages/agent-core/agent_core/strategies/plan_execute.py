@@ -95,12 +95,14 @@ def build_plan_execute_graph(
         history: list[dict[str, Any]] = []
         context = state.get("context") or ""
 
-        tool_result = await tools.call("retrieve", {"query": step}, state=dict(state))
-        history.append(
-            {"name": "retrieve", "arguments": {"query": step}, "result": tool_result}
-        )
-        if tool_result.get("ok"):
-            context = tool_result.get("context", "") or context
+        tool_result: dict[str, Any] = {"ok": True, "skipped": True, "hits": []}
+        if state.get("enable_rag"):
+            tool_result = await tools.call("retrieve", {"query": step}, state=dict(state))
+            history.append(
+                {"name": "retrieve", "arguments": {"query": step}, "result": tool_result}
+            )
+            if tool_result.get("ok") and not tool_result.get("skipped"):
+                context = tool_result.get("context", "") or context
 
         calc_hint = None
         if any(ch in step for ch in "+-*/") and any(c.isdigit() for c in step):
@@ -183,7 +185,7 @@ def build_plan_execute_graph(
             question=state["message"],
             answer=state.get("final_answer") or "",
             context=state.get("context") or "",
-            require_citation=True,
+            require_citation=bool(state.get("enable_rag") and state.get("context")),
             prompts=provider,
         )
         return {

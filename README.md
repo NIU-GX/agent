@@ -1,7 +1,8 @@
 # Agent Platform
 
 企业知识库问答 + 多工具 Agent 平台：统一 LLM 网关、异步 RAG（Milvus + RabbitMQ）、
-LangGraph 多策略（CoT / ReAct / Plan-and-Execute）、Tool / MCP / Skill 渐进式披露、
+LangGraph 多策略（CoT / ReAct / Plan-and-Execute / Multi-Agent）、意图能力路由、
+联网检索（web_search）、Tool / MCP / Skill 渐进式披露、
 评测与 Compose / Helm 双部署。
 
 ## 分层
@@ -74,7 +75,9 @@ LANGFUSE_PUBLIC_KEY=pk-lf-local-dev
 LANGFUSE_SECRET_KEY=sk-lf-local-dev
 ```
 
-前端 `VITE_LANGFUSE_URL`（默认 `http://localhost:3000`）用于导航「追踪」外链；对话 SSE 会带 `langfuse_url` 深链。
+前端 `VITE_LANGFUSE_URL`（默认 `http://localhost:3000`）用于导航「追踪」外链；对话 SSE 会带 `run_id` / `trace_id` / `langfuse_url`。
+完整工具轨迹以 Langfuse 为准；业务库 `agent_runs` 只存指针，可用 `GET /api/v1/chat/runs?session_id=` 查询。
+工具正确性：`ToolRegistry.call` 做解锁/JSON Schema/幂等门禁，结果统一 `ok`+可修复 `error_code`/`hint`；详见 `docs/architecture.md` §3。
 
 ## 评测与 CI
 
@@ -114,7 +117,11 @@ cd frontend && npm install && npm run dev
 | `cot` | Chain-of-Thought |
 | `react` | Reason + Act（默认；元工具 + 渐进解锁） |
 | `plan_execute` | 先规划再逐步执行（可 HITL） |
-| `auto` | LLM Router 自动选择 |
+| `multi_agent` | Supervisor + rag/web/calc 专员汇总 |
+| `auto` | 能力路由自动选择策略 / RAG / 联网 / Skills |
+
+对话前能力路由会产出 `enable_rag`、`enable_web_search`、预激活 Skills 与子智能体列表；
+前端 RAG 默认 `Auto`（`enable_rag=null`），可手动覆盖。联网检索需配置 `WEB_SEARCH_API_KEY`（Tavily）。
 
 渐进式披露：L0 目录（name/description）→ L1 激活（完整 schema / Skill 正文）→ L2 执行。
 能力发现：`GET /api/v1/capabilities/{tools,skills,mcp}`。

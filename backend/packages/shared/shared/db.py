@@ -94,6 +94,7 @@ class Database:
         import shared.mcp_store  # noqa: F401
         import shared.prompt_store  # noqa: F401
         import shared.rag_store  # noqa: F401
+        import shared.run_store  # noqa: F401
         import shared.skill_store  # noqa: F401
         import shared.tool_store  # noqa: F401
 

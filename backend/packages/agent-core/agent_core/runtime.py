@@ -1,4 +1,4 @@
-"""AgentRuntime：策略路由 + Postgres checkpoint + 真流式 SSE 投影。"""
+"""AgentRuntime：能力路由 + 策略图 + Postgres checkpoint + 真流式 SSE 投影。"""
 
 from __future__ import annotations
 
@@ -10,11 +10,17 @@ from shared.config import settings
 from shared.logging import get_logger
 from shared.schemas import AgentStrategy, ChatEvent
 
-from agent_core.nodes import llm_route_strategy
+from agent_core.nodes import classify_routing, llm_route_strategy
+from agent_core.nodes.intent import RoutingPlan
 from agent_core.prompts import BuiltinPromptProvider, PromptProvider
 from agent_core.skills.registry import SkillRegistry
 from agent_core.state import AgentState
-from agent_core.strategies import build_cot_graph, build_plan_execute_graph, build_react_graph
+from agent_core.strategies import (
+    build_cot_graph,
+    build_multi_agent_graph,
+    build_plan_execute_graph,
+    build_react_graph,
+)
 from agent_core.tools.registry import ToolRegistry
 from agent_core.tracing import refresh_trace_ids, start_trace
 
@@ -86,6 +92,12 @@ class AgentRuntime:
                 checkpointer=checkpointer,
                 prompts=self.prompts,
             ),
+            AgentStrategy.MULTI_AGENT: build_multi_agent_graph(
+                llm=self.llm,
+                tools=self.tools,
+                checkpointer=checkpointer,
+                prompts=self.prompts,
+            ),
         }
 
     async def aclose(self) -> None:
@@ -94,6 +106,71 @@ class AgentRuntime:
             await self._pg_pool.close()
             self._pg_pool = None
         self._checkpointer = None
+
+    def _available_skill_names(self) -> list[str]:
+        if not self.skills:
+            return []
+        return [item["name"] for item in self.skills.catalog()]
+
+    async def resolve_routing(
+        self,
+        *,
+        message: str,
+        strategy: AgentStrategy,
+        enable_rag: bool | None,
+        skills: list[str] | None,
+    ) -> tuple[AgentStrategy, RoutingPlan, bool]:
+        """能力路由：决定 strategy / rag / web / skills / agents。
+
+        返回 (chosen_strategy, plan, effective_enable_rag)。
+        enable_rag 显式传入时覆盖路由结果；strategy!=AUTO 时保留用户策略。
+        """
+        available = self._available_skill_names()
+        plan = await classify_routing(
+            self.llm,
+            message,
+            available_skills=available,
+            prompts=self.prompts,
+        )
+
+        if strategy != AgentStrategy.AUTO:
+            chosen = strategy
+            plan.strategy = strategy.value
+        else:
+            try:
+                chosen = AgentStrategy(plan.strategy)
+            except ValueError:
+                chosen = await llm_route_strategy(self.llm, message, prompts=self.prompts)
+                plan.strategy = chosen.value
+
+        if enable_rag is None:
+            effective_rag = bool(plan.enable_rag)
+        else:
+            effective_rag = bool(enable_rag)
+            plan.enable_rag = effective_rag
+
+        # 合并客户端预选 skills 与路由建议
+        client_skills = list(skills or [])
+        merged: list[str] = []
+        for name in [*plan.skills, *client_skills]:
+            if name and name not in merged:
+                merged.append(name)
+        if plan.enable_web_search and "web-research" not in merged:
+            merged.append("web-research")
+        if available:
+            merged = [s for s in merged if s in set(available)]
+        plan.skills = merged
+
+        if chosen == AgentStrategy.MULTI_AGENT and not plan.agents:
+            agents: list[str] = []
+            if plan.enable_rag:
+                agents.append("rag")
+            if plan.enable_web_search:
+                agents.append("web")
+            agents.append("synth")
+            plan.agents = agents
+
+        return chosen, plan, effective_rag
 
     async def resolve_strategy(self, strategy: AgentStrategy, message: str) -> AgentStrategy:
         if strategy != AgentStrategy.AUTO:
@@ -135,7 +212,7 @@ class AgentRuntime:
         *,
         message: str,
         strategy: AgentStrategy = AgentStrategy.AUTO,
-        enable_rag: bool = True,
+        enable_rag: bool | None = None,
         session_id: str | None = None,
         resume_value: Any | None = None,
         skills: list[str] | None = None,
@@ -144,14 +221,36 @@ class AgentRuntime:
         if not self._graphs:
             self._rebuild_graphs(checkpointer=None)
 
-        chosen = await self.resolve_strategy(strategy, message)
+        chosen, plan, effective_rag = await self.resolve_routing(
+            message=message,
+            strategy=strategy,
+            enable_rag=enable_rag,
+            skills=skills,
+        )
         thread_id = session_id or str(uuid.uuid4())
-        skill_names = list(skills or [])
+        run_id = str(uuid.uuid4())
+        skill_names = list(plan.skills)
+        unlock_extra: set[str] = set()
+        if plan.enable_web_search:
+            unlock_extra.add("web_search")
+
+        yield ChatEvent(
+            type="intent",
+            data={
+                "enable_rag": plan.enable_rag,
+                "enable_web_search": plan.enable_web_search,
+                "strategy": plan.strategy,
+                "skills": list(plan.skills),
+                "agents": list(plan.agents),
+                "reason": plan.reason,
+            },
+        )
+
         trace = start_trace(
             session_id=thread_id,
             strategy=chosen.value,
             skills=skill_names,
-            enable_rag=enable_rag,
+            enable_rag=effective_rag,
             name="agent.run",
         )
         yield ChatEvent(
@@ -159,12 +258,17 @@ class AgentRuntime:
             data={
                 "strategy": chosen.value,
                 "session_id": thread_id,
+                "run_id": run_id,
                 "trace_id": trace.trace_id,
                 "langfuse_url": trace.langfuse_url,
             },
         )
 
         pre = self._preactivate_skills(skill_names)
+        unlocked = set(pre.get("unlocked_tools") or [])
+        unlocked.update(unlock_extra)
+        pre["unlocked_tools"] = sorted(unlocked)
+
         for ev in pre.get("skill_events") or []:
             if ev.get("phase") == "activated":
                 yield ChatEvent(type="skill_start", data={"name": ev.get("name")})
@@ -192,13 +296,16 @@ class AgentRuntime:
                 "langfuse_session_id": thread_id,
                 "strategy": chosen.value,
                 "skills": skill_names,
-                "enable_rag": enable_rag,
+                "enable_rag": effective_rag,
+                "enable_web_search": plan.enable_web_search,
             }
             config["run_name"] = "agent.run"
         initial: AgentState = {
             "message": message,
             "strategy": chosen.value,
-            "enable_rag": enable_rag,
+            "enable_rag": effective_rag,
+            "enable_web_search": bool(plan.enable_web_search),
+            "routing": plan.to_dict(),
             "retrieval_scope": dict(retrieval_scope or {}),
             "thoughts": [],
             "plan_steps": [],
@@ -217,6 +324,11 @@ class AgentRuntime:
             "unlocked_tools": list(pre.get("unlocked_tools") or []),
             "skill_instructions": list(pre.get("skill_instructions") or []),
             "skill_events": [],
+            "active_agents": list(plan.agents),
+            "agent_tasks": {},
+            "agent_results": {},
+            "agent_context_parts": {},
+            "agent_events": [],
         }
 
         final_answer = ""
@@ -241,6 +353,7 @@ class AgentRuntime:
                         type="hitl",
                         data={
                             "session_id": thread_id,
+                            "run_id": run_id,
                             "payload": _serialize_interrupt(payload),
                             "trace_id": trace.trace_id,
                             "langfuse_url": trace.langfuse_url,
@@ -251,8 +364,32 @@ class AgentRuntime:
                 for node_name, delta in update.items():
                     if not isinstance(delta, dict):
                         continue
+                    for aev in delta.get("agent_events") or []:
+                        phase = aev.get("phase")
+                        agent_id = aev.get("agent") or node_name
+                        if phase == "start":
+                            yield ChatEvent(
+                                type="agent_start",
+                                data={
+                                    "agent": agent_id,
+                                    "task": aev.get("task"),
+                                    "node": node_name,
+                                },
+                            )
+                        elif phase == "end":
+                            yield ChatEvent(
+                                type="agent_end",
+                                data={
+                                    "agent": agent_id,
+                                    "ok": bool(aev.get("ok", True)),
+                                    "node": node_name,
+                                },
+                            )
                     for thought in delta.get("thoughts") or []:
-                        yield ChatEvent(type="thought", data={"node": node_name, "text": thought})
+                        yield ChatEvent(
+                            type="thought",
+                            data={"node": node_name, "text": thought, "agent": node_name},
+                        )
                     if delta.get("plan_steps"):
                         final_plan = list(delta["plan_steps"])
                         yield ChatEvent(type="plan", data={"steps": final_plan})
@@ -261,6 +398,7 @@ class AgentRuntime:
                             type="hitl",
                             data={
                                 "session_id": thread_id,
+                                "run_id": run_id,
                                 "kind": "plan_approval",
                                 "plan_steps": delta.get("plan_steps") or final_plan,
                                 "trace_id": trace.trace_id,
@@ -287,6 +425,7 @@ class AgentRuntime:
                                 data={
                                     "name": item.get("name"),
                                     "arguments": item.get("arguments"),
+                                    "agent": item.get("agent"),
                                 },
                             )
                         else:
@@ -295,6 +434,7 @@ class AgentRuntime:
                                 data={
                                     "name": item.get("name"),
                                     "ok": bool((item.get("result") or {}).get("ok", True)),
+                                    "agent": item.get("agent"),
                                 },
                             )
                     if delta.get("citations"):
@@ -316,6 +456,7 @@ class AgentRuntime:
                     type="hitl",
                     data={
                         "session_id": thread_id,
+                        "run_id": run_id,
                         "payload": str(exc),
                         "trace_id": trace.trace_id,
                         "langfuse_url": trace.langfuse_url,
@@ -329,6 +470,8 @@ class AgentRuntime:
                 type="error",
                 data={
                     "message": str(exc),
+                    "session_id": thread_id,
+                    "run_id": run_id,
                     "trace_id": trace.trace_id,
                     "langfuse_url": trace.langfuse_url,
                 },
@@ -349,8 +492,10 @@ class AgentRuntime:
                 "strategy": chosen.value,
                 "plan_steps": final_plan,
                 "session_id": thread_id,
+                "run_id": run_id,
                 "trace_id": trace.trace_id,
                 "langfuse_url": trace.langfuse_url,
+                "routing": plan.to_dict(),
             },
         )
 

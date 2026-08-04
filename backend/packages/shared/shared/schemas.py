@@ -23,11 +23,12 @@ class DocumentStatus(str, Enum):
 
 
 class AgentStrategy(str, Enum):
-    """Agent 推理策略：企业常见三范式 + 自动路由。"""
+    """Agent 推理策略：企业常见范式 + 多 Agent + 自动路由。"""
 
     COT = "cot"
     REACT = "react"
     PLAN_EXECUTE = "plan_execute"
+    MULTI_AGENT = "multi_agent"
     AUTO = "auto"
 
 
@@ -47,9 +48,12 @@ class ChatRequest(BaseModel):
     session_id: str | None = Field(default=None, description="会话 ID，用于 checkpoint")
     strategy: AgentStrategy = Field(
         default=AgentStrategy.AUTO,
-        description="cot | react | plan_execute | auto",
+        description="cot | react | plan_execute | multi_agent | auto",
     )
-    enable_rag: bool = Field(default=True, description="是否启用知识库检索")
+    enable_rag: bool | None = Field(
+        default=None,
+        description="是否启用知识库检索；null 表示由意图路由决定",
+    )
     skills: list[str] = Field(
         default_factory=list,
         description="会话级预激活的 skill 名称（L1）",
@@ -81,10 +85,24 @@ class ChatEvent(BaseModel):
         ...,
         description=(
             "token|thought|tool_start|tool_end|skill_start|skill_end|"
-            "plan|citation|final|error|strategy|hitl"
+            "plan|citation|final|error|strategy|hitl|intent|agent_start|agent_end"
         ),
     )
     data: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentRunOut(BaseModel):
+    """业务侧 run 指针（轨迹正文在 Langfuse）。"""
+
+    run_id: str
+    session_id: str
+    trace_id: str | None = None
+    langfuse_url: str | None = None
+    strategy: str | None = None
+    status: str = "started"
+    tenant_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class DocumentOut(BaseModel):

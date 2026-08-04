@@ -91,9 +91,32 @@ def build_react_graph(
         if tool_calls:
             call = tool_calls[0]
             name = call["function"]["name"]
+            raw_args = call["function"].get("arguments") or "{}"
             try:
-                args = json.loads(call["function"].get("arguments") or "{}")
+                args = json.loads(raw_args)
             except json.JSONDecodeError:
+                # 事前拦截非法 JSON：直接回灌可修复错误，跳过真实执行
+                return {
+                    "iterations": iterations + 1,
+                    "pending_tool": None,
+                    "thoughts": [content or f"工具参数 JSON 非法: {name}"],
+                    "tool_history": [
+                        {
+                            "name": name,
+                            "arguments": {"_raw": raw_args[:500]},
+                            "call_id": call.get("id", "call"),
+                            "result": {
+                                "ok": False,
+                                "error_code": "invalid_json_arguments",
+                                "error": "tool arguments is not valid JSON",
+                                "fixable": True,
+                                "hint": "将 function.arguments 改为合法 JSON 对象后重试",
+                            },
+                        }
+                    ],
+                    "done": False,
+                }
+            if not isinstance(args, dict):
                 args = {}
             history = state.get("tool_history") or []
             if history and history[-1].get("name") == name and history[-1].get("arguments") == args:
@@ -131,7 +154,12 @@ def build_react_graph(
         last = history[-1]
         name = last["name"]
         args = last.get("arguments") or {}
-        result = await tools.call(name, args, state=dict(state))
+        result = await tools.call(
+            name,
+            args,
+            state=dict(state),
+            call_id=str(last.get("call_id") or ""),
+        )
         result_for_history = result
         if isinstance(result, dict) and "state_patch" in result:
             result_for_history = {k: v for k, v in result.items() if k != "state_patch"}
@@ -183,6 +211,12 @@ def build_react_graph(
             return "critic"
         if state.get("pending_tool"):
             return "act"
+        # 非法 JSON 等已写入 observation 且未结束：继续 reason 让模型按 hint 修复
+        history = state.get("tool_history") or []
+        if history and history[-1].get("result") is not None and not state.get("done"):
+            last_result = history[-1].get("result") or {}
+            if last_result.get("fixable"):
+                return "reason"
         return "critic"
 
     graph = StateGraph(AgentState)
@@ -191,7 +225,9 @@ def build_react_graph(
     graph.add_node("critic", critic)
     graph.set_entry_point("reason")
     graph.add_conditional_edges(
-        "reason", route_after_reason, {"act": "act", "critic": "critic"}
+        "reason",
+        route_after_reason,
+        {"act": "act", "critic": "critic", "reason": "reason"},
     )
     graph.add_edge("act", "reason")
     graph.add_edge("critic", END)

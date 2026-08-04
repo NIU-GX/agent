@@ -144,14 +144,19 @@
             >
               /
             </button>
-            <button
-              type="button"
-              class="tool-btn"
-              :class="{ on: enableRag }"
-              @click="enableRag = !enableRag"
-            >
-              RAG
-            </button>
+            <div class="seg" role="group" aria-label="RAG">
+              <button
+                v-for="opt in ragOptions"
+                :key="opt.value"
+                type="button"
+                class="seg-item"
+                :class="{ on: enableRag === opt.value }"
+                :title="opt.title"
+                @click="enableRag = opt.value"
+              >
+                {{ opt.label }}
+              </button>
+            </div>
           </div>
           <button
             type="button"
@@ -180,7 +185,8 @@ import { resumeChat, streamChat, type ChatEvent } from '../api/chat'
 type ActivityItem = { kind: string; summary: string; href?: string }
 
 const strategy = ref('auto')
-const enableRag = ref(true)
+/** null = Auto（由意图路由决定）；true/false = 手动覆盖 */
+const enableRag = ref<boolean | null>(null)
 const message = ref('')
 const loading = ref(false)
 const answer = ref('')
@@ -210,6 +216,11 @@ const FALLBACK_SKILLS: SkillCatalogItem[] = [
     description: '数值与算术辅助：优先用 calculator，避免心算错误',
     tools: ['calculator'],
   },
+  {
+    name: 'web-research',
+    description: '公网调研：web_search + http_get，注明来源',
+    tools: ['web_search', 'http_get'],
+  },
 ]
 
 const strategyOptions = [
@@ -217,12 +228,20 @@ const strategyOptions = [
   { value: 'cot', label: 'CoT' },
   { value: 'react', label: 'ReAct' },
   { value: 'plan_execute', label: 'Plan' },
+  { value: 'multi_agent', label: 'Multi' },
 ] as const
+
+const ragOptions = [
+  { value: null as boolean | null, label: 'RAG·Auto', title: '由意图路由决定是否检索知识库' },
+  { value: true as boolean | null, label: '开', title: '强制启用知识库检索' },
+  { value: false as boolean | null, label: '关', title: '强制关闭知识库检索' },
+]
 
 const suggestions = [
   '对比两份政策文档的差异并给出结论',
   '检索知识库中关于权限审批的流程',
   '用计算器核对这段费用合计是否正确',
+  '搜索一下最新的公开行业资讯并总结',
 ]
 
 const slashMatch = computed(() => {
@@ -245,6 +264,7 @@ const filteredSkills = computed(() => {
 
 const labels: Record<string, string> = {
   strategy: '策略',
+  intent: '路由',
   thought: '思考',
   plan: '计划',
   hitl: '确认',
@@ -252,6 +272,8 @@ const labels: Record<string, string> = {
   tool_end: '完成',
   skill_start: '技能',
   skill_end: '技能',
+  agent_start: '智能体',
+  agent_end: '智能体',
   citation: '引用',
   trace: '追踪',
   error: '错误',
@@ -271,15 +293,30 @@ function labelOf(kind: string) {
 function summarize(kind: string, data: Record<string, unknown> | string): string {
   if (typeof data === 'string') return data
   if (kind === 'strategy') return String(data.strategy || JSON.stringify(data))
+  if (kind === 'intent') {
+    const rag = data.enable_rag ? 'RAG开' : 'RAG关'
+    const web = data.enable_web_search ? '联网开' : '联网关'
+    const strat = data.strategy ? String(data.strategy) : ''
+    const reason = data.reason ? String(data.reason) : ''
+    const skills = Array.isArray(data.skills) ? data.skills.join(',') : ''
+    return [rag, web, strat, skills, reason].filter(Boolean).join(' · ')
+  }
   if (kind === 'thought') return String(data.text || '')
   if (kind === 'plan') {
     const steps = data.steps
     return Array.isArray(steps) ? steps.join(' → ') : JSON.stringify(data)
   }
+  if (kind === 'agent_start' || kind === 'agent_end') {
+    const agent = data.agent ? String(data.agent) : ''
+    const task = data.task ? String(data.task) : ''
+    const ok = data.ok === false ? '失败' : data.ok === true ? '完成' : '开始'
+    return [agent, ok, task].filter(Boolean).join(' · ')
+  }
   if (kind === 'tool_start' || kind === 'tool_end' || kind === 'skill_start' || kind === 'skill_end') {
     const name = data.name ? String(data.name) : ''
     const ok = data.ok === false ? '失败' : data.ok === true ? '成功' : ''
-    return [name, ok].filter(Boolean).join(' · ') || JSON.stringify(data)
+    const agent = data.agent ? String(data.agent) : ''
+    return [agent, name, ok].filter(Boolean).join(' · ') || JSON.stringify(data)
   }
   if (kind === 'citation') {
     const citations = data.citations
@@ -427,7 +464,10 @@ watch([activity, answer, pendingHitl], () => {
 })
 
 function handleEvent(ev: ChatEvent) {
-  if (ev.type === 'strategy') {
+  if (ev.type === 'intent') {
+    activity.value.push({ kind: 'intent', summary: summarize('intent', ev.data) })
+    showActivity.value = true
+  } else if (ev.type === 'strategy') {
     sessionId.value = String(ev.data.session_id || sessionId.value || '')
     rememberTrace(ev.data)
     activity.value.push({ kind: 'strategy', summary: summarize('strategy', ev.data) })
@@ -442,6 +482,8 @@ function handleEvent(ev: ChatEvent) {
     activity.value.push({ kind: 'thought', summary: summarize('thought', ev.data) })
   } else if (ev.type === 'plan') {
     activity.value.push({ kind: 'plan', summary: summarize('plan', ev.data) })
+  } else if (ev.type === 'agent_start' || ev.type === 'agent_end') {
+    activity.value.push({ kind: ev.type, summary: summarize(ev.type, ev.data) })
   } else if (ev.type === 'hitl') {
     pendingHitl.value = ev.data
     sessionId.value = String(ev.data.session_id || sessionId.value || '')

@@ -10,8 +10,16 @@ from urllib.parse import urlparse
 
 import httpx
 
+from shared.config import settings
 from shared.logging import get_logger
 
+from agent_core.tools.guard import (
+    CallIdempotencyCache,
+    check_visibility,
+    normalize_result,
+    tool_error,
+    validate_arguments,
+)
 from agent_core.tools.mcp import McpToolBridge
 
 logger = get_logger(__name__)
@@ -24,7 +32,7 @@ class Retriever(Protocol):
 
 
 class ToolRegistry:
-    """Agent 可调用的工具集合（L0 catalog / L1 schema / L2 call）。"""
+    """Agent 可调用的工具集合（L0 catalog / L1 schema / L2 call + 门禁）。"""
 
     def __init__(
         self,
@@ -43,6 +51,7 @@ class ToolRegistry:
         self._sources: dict[str, str] = {}  # builtin | meta | webhook | mcp
         self._enabled: dict[str, bool] = {}
         self._webhook_meta: dict[str, dict[str, Any]] = {}
+        self._idempotency = CallIdempotencyCache()
         self._register_builtins()
         self._register_meta_tools()
 
@@ -100,7 +109,9 @@ class ToolRegistry:
         enabled: bool = True,
     ) -> None:
         """注册 HTTP Webhook 工具：call 时将 arguments 作为 JSON body POST/PUT。"""
-        params = parameters or {"type": "object", "properties": {}}
+        params = parameters or {"type": "object", "properties": {}, "additionalProperties": False}
+        if "additionalProperties" not in params:
+            params = {**params, "additionalProperties": False}
         schema = self._fn_schema(name, description or f"Webhook tool {name}", params)
         meta = {
             "url": webhook_url,
@@ -182,11 +193,19 @@ class ToolRegistry:
             "retrieve",
             self._fn_schema(
                 "retrieve",
-                "从企业知识库检索与问题相关的文档片段",
+                "从企业知识库检索与问题相关的文档片段。仅在需要内部政策/流程/知识时调用；"
+                "query 应为简洁检索句，禁止空字符串。",
                 {
                     "type": "object",
-                    "properties": {"query": {"type": "string", "description": "检索查询"}},
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "检索查询（非空）",
+                        }
+                    },
                     "required": ["query"],
+                    "additionalProperties": False,
                 },
             ),
             self._handle_retrieve,
@@ -197,11 +216,18 @@ class ToolRegistry:
             "calculator",
             self._fn_schema(
                 "calculator",
-                "计算简单算术表达式，例如 2+3*4",
+                "计算简单算术表达式（+ - * / 与括号），例如 2+3*4。不要用于文字推理。",
                 {
                     "type": "object",
-                    "properties": {"expression": {"type": "string"}},
+                    "properties": {
+                        "expression": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "算术表达式，仅数字与运算符",
+                        }
+                    },
                     "required": ["expression"],
+                    "additionalProperties": False,
                 },
             ),
             self._handle_calculator,
@@ -212,14 +238,50 @@ class ToolRegistry:
             "http_get",
             self._fn_schema(
                 "http_get",
-                "对允许列表内的 HTTPS 端点发起 GET（只读）",
+                "对允许列表内的 http(s) 端点发起只读 GET。url 必须含协议与主机。",
                 {
                     "type": "object",
-                    "properties": {"url": {"type": "string"}},
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "minLength": 8,
+                            "description": "完整 URL，如 https://example.com/path",
+                        }
+                    },
                     "required": ["url"],
+                    "additionalProperties": False,
                 },
             ),
             self._handle_http_get,
+            tier="optional",
+            source="builtin",
+        )
+        self.register(
+            "web_search",
+            self._fn_schema(
+                "web_search",
+                "对公开互联网关键词检索，返回标题/链接/摘要（需 WEB_SEARCH_API_KEY）。"
+                "仅公开信息场景使用；企业内部问题优先 retrieve。",
+                {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "搜索查询（非空）",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 20,
+                            "description": "返回条数 1-20，默认取配置",
+                        },
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            ),
+            self._handle_web_search,
             tier="optional",
             source="builtin",
         )
@@ -229,8 +291,8 @@ class ToolRegistry:
             "list_skills",
             self._fn_schema(
                 "list_skills",
-                "列出可用 Skills 目录（L0：name + description）",
-                {"type": "object", "properties": {}},
+                "列出可用 Skills 目录（L0：name + description）。无参数。",
+                {"type": "object", "properties": {}, "additionalProperties": False},
             ),
             self._handle_list_skills,
             tier="meta",
@@ -240,13 +302,19 @@ class ToolRegistry:
             "activate_skill",
             self._fn_schema(
                 "activate_skill",
-                "激活指定 Skill：注入完整指令并解锁其声明的 tools/mcp（L1）",
+                "激活指定 Skill：注入完整指令并解锁其声明的 tools/mcp（L1）。"
+                "name 必须来自 list_skills 目录中的已有 Skill。",
                 {
                     "type": "object",
                     "properties": {
-                        "name": {"type": "string", "description": "Skill 名称"},
+                        "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Skill 名称（非空，须存在于目录）",
+                        },
                     },
                     "required": ["name"],
+                    "additionalProperties": False,
                 },
             ),
             self._handle_activate_skill,
@@ -257,7 +325,7 @@ class ToolRegistry:
             "list_tools",
             self._fn_schema(
                 "list_tools",
-                "列出工具目录（L0）；含 core/optional/mcp 与是否已解锁",
+                "列出工具目录（L0）；含 core/optional/mcp 与是否已解锁。",
                 {
                     "type": "object",
                     "properties": {
@@ -267,6 +335,7 @@ class ToolRegistry:
                             "description": "当前已解锁工具名（可选）",
                         },
                     },
+                    "additionalProperties": False,
                 },
             ),
             self._handle_list_tools,
@@ -359,20 +428,73 @@ class ToolRegistry:
     async def call(
         self,
         name: str,
-        arguments: dict[str, Any],
+        arguments: dict[str, Any] | None = None,
         *,
         state: dict[str, Any] | None = None,
+        call_id: str | None = None,
     ) -> dict[str, Any]:
-        if name in self._schemas and not self._enabled.get(name, True):
-            return {"ok": False, "error": f"tool disabled: {name}"}
+        """L2 执行：可见性 → 参数 schema →（幂等）执行 → 结果契约。"""
+        cached = self._idempotency.get(call_id)
+        if cached is not None:
+            return {**cached, "idempotent_replay": True}
+
+        state = state or {}
+        unlocked = set(state.get("unlocked_tools") or [])
+        in_registry = name in self._schemas
         handler = self._handlers.get(name)
-        if not handler:
-            if name.startswith("mcp_"):
-                return await self.mcp.call(name, arguments)
-            return {"ok": False, "error": f"unknown tool: {name}"}
-        if name in {"list_tools", "activate_skill", "list_skills", "retrieve"}:
-            return await handler({**(arguments or {}), "__state__": state or {}})
-        return await handler(arguments or {})
+
+        if not in_registry and handler is None and not name.startswith("mcp_"):
+            err = tool_error(
+                error=f"unknown tool: {name}",
+                error_code="unknown_tool",
+                fixable=True,
+                hint="先 list_tools / activate_skill 解锁后再调用；勿调用未披露工具。",
+            )
+            self._idempotency.put(call_id, err)
+            return err
+
+        tier = self._tiers.get(name) or ("mcp" if name.startswith("mcp_") else "optional")
+        enabled = self._enabled.get(name, True) if in_registry else True
+        gate = check_visibility(
+            name=name,
+            tier=tier,
+            enabled=enabled,
+            registered=True,
+            unlocked=unlocked,
+        )
+        if gate is not None:
+            self._idempotency.put(call_id, gate)
+            return gate
+
+        arg_err = validate_arguments(name, arguments or {}, self._schemas.get(name))
+        if arg_err is not None:
+            self._idempotency.put(call_id, arg_err)
+            return arg_err
+
+        try:
+            if handler is None and name.startswith("mcp_"):
+                raw = await self.mcp.call(name, arguments or {})
+            elif handler is None:
+                raw = tool_error(
+                    error=f"unknown tool: {name}",
+                    error_code="unknown_tool",
+                    fixable=True,
+                )
+            elif name in {"list_tools", "activate_skill", "list_skills", "retrieve"}:
+                raw = await handler({**(arguments or {}), "__state__": state})
+            else:
+                raw = await handler(arguments or {})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("tool %s raised", name)
+            raw = tool_error(
+                error=str(exc),
+                error_code="tool_exception",
+                fixable=False,
+            )
+
+        result = normalize_result(name, raw)
+        self._idempotency.put(call_id, result)
+        return result
 
     async def _call_webhook(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         meta = self._webhook_meta.get(name)
@@ -409,9 +531,21 @@ class ToolRegistry:
             return {"ok": False, "error": str(exc)}
 
     async def _handle_retrieve(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        state = arguments.get("__state__") or {}
+        if state.get("enable_rag") is False:
+            return {
+                "ok": True,
+                "skipped": True,
+                "context": "",
+                "hits": [],
+                "error": "rag disabled by routing",
+            }
         if not self.retriever:
             return {"ok": False, "error": "retriever not configured"}
-        result = await self.retriever.retrieve(arguments["query"], scope=arguments.get("__state__", {}).get("retrieval_scope"))
+        result = await self.retriever.retrieve(
+            arguments["query"],
+            scope=state.get("retrieval_scope"),
+        )
         return {
             "ok": True,
             "context": getattr(result, "context_text", ""),
@@ -426,6 +560,61 @@ class ToolRegistry:
 
     async def _handle_http_get(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return await self._http_get(arguments.get("url", ""))
+
+    async def _handle_web_search(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            return {"ok": False, "error": "query required"}
+        max_results = arguments.get("max_results")
+        try:
+            limit = int(max_results) if max_results is not None else int(settings.web_search_max_results)
+        except (TypeError, ValueError):
+            limit = int(settings.web_search_max_results)
+        limit = max(1, min(limit, 20))
+        return await self._web_search(query, max_results=limit)
+
+    async def _web_search(self, query: str, *, max_results: int) -> dict[str, Any]:
+        provider = (settings.web_search_provider or "tavily").strip().lower()
+        api_key = (settings.web_search_api_key or "").strip()
+        if not api_key:
+            return {
+                "ok": False,
+                "error": "WEB_SEARCH_API_KEY not configured",
+                "provider": provider,
+            }
+        if provider != "tavily":
+            return {"ok": False, "error": f"unsupported web_search provider: {provider}"}
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "api_key": api_key,
+                        "query": query,
+                        "max_results": max_results,
+                        "include_answer": False,
+                        "search_depth": "basic",
+                    },
+                )
+                if resp.is_error:
+                    return {
+                        "ok": False,
+                        "error": f"tavily status {resp.status_code}",
+                        "body": resp.text[:1000],
+                    }
+                data = resp.json()
+                results = []
+                for item in data.get("results") or []:
+                    results.append(
+                        {
+                            "title": item.get("title") or "",
+                            "url": item.get("url") or "",
+                            "snippet": item.get("content") or item.get("snippet") or "",
+                        }
+                    )
+                return {"ok": True, "provider": "tavily", "query": query, "results": results}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc), "provider": provider}
 
     async def _handle_list_skills(self, arguments: dict[str, Any]) -> dict[str, Any]:
         if not self.skills:
